@@ -81,23 +81,23 @@ def print_results(results: dict):
         print("No closed trades to report.")
         return
 
-    SEP = "═" * 72
-    sep = "─" * 72
+    SEP = "=" * 72
+    sep = "-" * 72
 
     print(f"\n{SEP}")
-    print("  MyTradingBot-SO │ Nifty50 Stock Options │ 12-Month Backtest Results")
+    print("  MyTradingBot-SO | Nifty50 Stock Options | 12-Month Backtest Results")
     print(SEP)
     print(f"  Run ID : {results['run_id']}")
-    print(f"  Trades : {results['total_trades']}  │  Wins: {results['wins']}  Losses: {results['losses']}")
+    print(f"  Trades : {results['total_trades']}  |  Wins: {results['wins']}  Losses: {results['losses']}")
     print(f"  Win Rate         : {results['win_rate']}%")
-    print(f"  Total P&L        : ₹{results['total_pnl']:>+,.0f}")
-    print(f"  Avg P&L/Trade    : ₹{results['avg_pnl']:>+,.0f}")
-    print(f"  Avg Win          : ₹{results['avg_win']:>+,.0f}")
-    print(f"  Avg Loss         : ₹{results['avg_loss']:>+,.0f}")
+    print(f"  Total P&L        : Rs {results['total_pnl']:>+,.0f}")
+    print(f"  Avg P&L/Trade    : Rs {results['avg_pnl']:>+,.0f}")
+    print(f"  Avg Win          : Rs {results['avg_win']:>+,.0f}")
+    print(f"  Avg Loss         : Rs {results['avg_loss']:>+,.0f}")
     print(f"  Profit Factor    : {results['profit_factor']:.2f}x")
-    print(f"  Best Trade       : ₹{results['best_trade']:>+,.0f}")
-    print(f"  Worst Trade      : ₹{results['worst_trade']:>+,.0f}")
-    print(f"  Max Drawdown     : ₹{results['max_drawdown']:>,.0f}")
+    print(f"  Best Trade       : Rs {results['best_trade']:>+,.0f}")
+    print(f"  Worst Trade      : Rs {results['worst_trade']:>+,.0f}")
+    print(f"  Max Drawdown     : Rs {results['max_drawdown']:>,.0f}")
 
     print(f"\n{sep}")
     print("  BY STRATEGY")
@@ -120,7 +120,7 @@ def print_results(results: dict):
 
     print(SEP)
     pnl = results["total_pnl"]
-    verdict = "PROFITABLE ✓" if pnl > 0 else "LOSS-MAKING ✗"
-    print(f"  VERDICT: {verdict} │ Net P&L: ₹{pnl:>+,.0f}")
+    verdict = "PROFITABLE [+]" if pnl > 0 else "LOSS-MAKING [-]"
+    print(f"  VERDICT: {verdict} | Net P&L: Rs {pnl:>+,.0f}")
     print(SEP)
     print()

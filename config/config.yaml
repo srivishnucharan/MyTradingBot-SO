@@ -121,7 +121,7 @@ instruments:
     sector: AUTO
     strike_gap: 5
     earnings_months: [1, 4, 7, 10]
-    enabled: true
+    enabled: false   # Not in NSE FNO list in current scrip master
 
   - symbol: WIPRO
     lot_size: 1500

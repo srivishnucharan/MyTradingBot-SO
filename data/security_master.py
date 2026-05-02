@@ -1,8 +1,11 @@
 """
 security_master.py
-Maps Nifty 50 stock symbols → Dhan security IDs.
+Maps Nifty 50 stock symbols -> Dhan security IDs.
 Downloads and caches Dhan scrip master CSV daily.
-Supports equity (NSE_EQ) stocks and their FNO option chains.
+
+CSV column names (as of 2025 Dhan format):
+  EXCH_ID, SEGMENT, SECURITY_ID, INSTRUMENT, UNDERLYING_SECURITY_ID,
+  UNDERLYING_SYMBOL, SYMBOL_NAME, SM_EXPIRY_DATE, STRIKE_PRICE, OPTION_TYPE
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ NIFTY50_SYMBOLS = {
     "HINDALCO", "TATASTEEL", "JSWSTEEL", "COALINDIA", "GRASIM", "INDUSINDBK",
     "CIPLA", "DRREDDY", "DIVISLAB", "ADANIENT", "ADANIPORTS", "APOLLOHOSP",
     "BPCL", "BRITANNIA", "EICHERMOT", "HEROMOTOCO", "M&M", "ONGC",
-    "SBILIFE", "SHRIRAMFIN", "TATACONSUM", "TRENT", "ZOMATO",
+    "SBILIFE", "SHRIRAMFIN", "TATACONSUM", "TRENT", "ETERNAL",
 }
 
 # Sector mapping for confluence FII checks
@@ -45,7 +48,7 @@ SECTOR_MAP = {
     "LT": "INFRASTRUCTURE", "ADANIPORTS": "INFRASTRUCTURE", "POWERGRID": "UTILITIES",
     "NTPC": "UTILITIES", "BHARTIARTL": "TELECOM", "TITAN": "CONSUMER",
     "ASIANPAINT": "CONSUMER", "NESTLEIND": "CONSUMER", "BRITANNIA": "CONSUMER",
-    "TATACONSUM": "CONSUMER", "TRENT": "CONSUMER", "ZOMATO": "CONSUMER",
+    "TATACONSUM": "CONSUMER", "TRENT": "CONSUMER", "ETERNAL": "CONSUMER",
     "HINDALCO": "METALS", "TATASTEEL": "METALS", "JSWSTEEL": "METALS",
     "GRASIM": "MATERIALS", "ULTRACEMCO": "MATERIALS", "ADANIENT": "CONGLOMERATE",
     "APOLLOHOSP": "HEALTHCARE", "M&M": "AUTO",
@@ -69,8 +72,8 @@ class SecurityMaster:
     def __init__(self):
         if self._loaded:
             return
-        self._equity_ids: dict[str, int] = {}     # symbol → equity security_id
-        self._row_by_id: dict[int, dict] = {}
+        self._equity_ids: dict[str, int] = {}     # symbol -> equity security_id (underlying)
+        self._option_rows: list[dict] = []          # NSE OPTSTK rows for find_option()
         self._ensure_fresh()
         self._load()
         self._loaded = True
@@ -90,25 +93,34 @@ class SecurityMaster:
             log.info("Scrip master saved to %s", LOCAL_PATH)
 
     def _load(self):
+        """
+        Build equity ID map from NSE OPTSTK rows:
+          UNDERLYING_SYMBOL -> UNDERLYING_SECURITY_ID (the equity security ID for market data)
+        """
         with LOCAL_PATH.open("r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                try:
-                    sec_id = int(row["SEM_SMST_SECURITY_ID"])
-                except (KeyError, ValueError):
+                exch = row.get("EXCH_ID", "").strip()
+                instr = row.get("INSTRUMENT", "").strip()
+                if exch != "NSE" or instr != "OPTSTK":
                     continue
-                tsym = row.get("SEM_TRADING_SYMBOL", "").strip().upper()
-                exch = row.get("SEM_EXM_EXCH_ID", "").strip().upper()
-                instr = row.get("SEM_INSTRUMENT_NAME", "").strip().upper()
-                self._row_by_id[sec_id] = row
 
-                # Equity NSE: look for EQUITY instruments in NSE exchange
-                if exch == "NSE" and instr in ("EQUITY",) and tsym in NIFTY50_SYMBOLS:
-                    if tsym not in self._equity_ids:
-                        self._equity_ids[tsym] = sec_id
+                und_sym = row.get("UNDERLYING_SYMBOL", "").strip().upper()
+                und_sec_id = row.get("UNDERLYING_SECURITY_ID", "").strip()
 
-        log.info("Loaded %d instruments; %d Nifty50 equity IDs mapped",
-                 len(self._row_by_id), len(self._equity_ids))
+                # Store equity underlying ID (first occurrence per symbol)
+                if und_sym and und_sym not in self._equity_ids:
+                    try:
+                        self._equity_ids[und_sym] = int(und_sec_id)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Keep option rows for find_option() — only for tracked symbols
+                if und_sym in NIFTY50_SYMBOLS:
+                    self._option_rows.append(row)
+
+        log.info("Loaded %d Nifty50 equity IDs, %d option rows",
+                 len(self._equity_ids), len(self._option_rows))
         missing = NIFTY50_SYMBOLS - set(self._equity_ids.keys())
         if missing:
             log.warning("Missing equity IDs for: %s", sorted(missing))
@@ -132,23 +144,25 @@ class SecurityMaster:
     def find_option(self, symbol: str, expiry: "date",
                      strike: float, option_type: str) -> tuple[int, str]:
         """Returns (security_id, tradingsymbol) for a specific option contract."""
-        from datetime import date as _date
-        for sec_id, row in self._row_by_id.items():
-            if row.get("SEM_INSTRUMENT_NAME", "").upper() not in ("OPTSTK",):
+        expiry_str = expiry.strftime("%Y-%m-%d")
+        sym_upper = symbol.upper()
+        for row in self._option_rows:
+            if row.get("UNDERLYING_SYMBOL", "").upper() != sym_upper:
                 continue
-            tsym = row.get("SEM_TRADING_SYMBOL", "").upper()
-            if not tsym.startswith(symbol.upper()):
-                continue
-            row_expiry = row.get("SEM_EXPIRY_DATE", "")[:10]
-            if row_expiry != expiry.strftime("%Y-%m-%d"):
+            row_expiry = row.get("SM_EXPIRY_DATE", "")[:10]
+            if row_expiry != expiry_str:
                 continue
             try:
-                row_strike = float(row.get("SEM_STRIKE_PRICE", 0))
-            except ValueError:
+                row_strike = float(row.get("STRIKE_PRICE", 0))
+            except (ValueError, TypeError):
                 continue
             if abs(row_strike - strike) < 0.01:
-                if row.get("SEM_OPTION_TYPE", "").upper() == option_type.upper():
-                    return sec_id, row["SEM_TRADING_SYMBOL"]
+                if row.get("OPTION_TYPE", "").upper() == option_type.upper():
+                    try:
+                        sec_id = int(row["SECURITY_ID"])
+                    except (ValueError, TypeError):
+                        continue
+                    return sec_id, row.get("SYMBOL_NAME", "")
         raise KeyError(f"Option not found: {symbol} {expiry} {strike} {option_type}")
 
     def all_equity_ids(self) -> dict[str, int]:
