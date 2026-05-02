@@ -26,6 +26,7 @@ except ImportError:
 from data.dhan_client import DhanClient
 from data.security_master import SecurityMaster
 from data.market_data import MarketData, StockMarketContext
+from data.sentiment_engine import SentimentEngine, MacroSentiment
 from data import store
 from agents.signal_agent import SignalAgent
 from agents.risk_agent import RiskAgent
@@ -91,6 +92,13 @@ class BacktestEngine:
             except Exception as e:
                 print(f"ERROR: {e}")
 
+        # Pre-fetch global macro bars for the same period
+        print("\nFetching global macro data (US indices, crude, ADRs, DXY, VIX)...")
+        macro_bars = SentimentEngine.fetch_macro_bars(
+            start_date - timedelta(days=30), end_date
+        )
+        print(f"  Macro tickers loaded: {len(macro_bars)}")
+
         # Walk forward through trading days
         trades: list[BacktestTrade] = []
         open_trades: list[BacktestTrade] = []
@@ -102,6 +110,9 @@ class BacktestEngine:
             if current.weekday() >= 5:
                 current += timedelta(days=1)
                 continue
+
+            # Compute macro sentiment for this date (no look-ahead — uses data up to current)
+            macro = SentimentEngine.compute(current, macro_bars)
 
             # Check exits for open trades first
             still_open = []
@@ -124,7 +135,7 @@ class BacktestEngine:
                         continue
 
                     bars = all_bars[symbol]
-                    ctx = self._build_backtest_ctx(instr, bars, current)
+                    ctx = self._build_backtest_ctx(instr, bars, current, macro)
                     if ctx is None:
                         continue
 
@@ -139,6 +150,8 @@ class BacktestEngine:
                         open_positions=len(open_trades),
                         lot_size=instr["lot_size"],
                         now=dtime(10, 0),  # backtest: always within entry window
+                        sector=ctx.sector,
+                        macro=macro,
                     )
 
                     if not decision.approved:
@@ -267,7 +280,8 @@ class BacktestEngine:
         return False
 
     def _build_backtest_ctx(self, instr: dict, bars: pd.DataFrame,
-                              as_of: date) -> Optional[StockMarketContext]:
+                              as_of: date,
+                              macro: Optional[object] = None) -> Optional[StockMarketContext]:
         """Build a StockMarketContext using only data available as of `as_of`."""
         symbol = instr["symbol"]
         past_bars = bars[bars["date"] <= pd.Timestamp(as_of)].copy()
@@ -327,6 +341,7 @@ class BacktestEngine:
             hist_vol_30=hist_vol,
             earnings_next=earnings_next,
             fii_sector_trend=fii_trend,
+            macro_sentiment=macro,
         )
 
     def _fetch_bars(self, instr: dict, from_date: date, to_date: date) -> Optional[pd.DataFrame]:

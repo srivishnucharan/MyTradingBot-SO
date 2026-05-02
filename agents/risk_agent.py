@@ -5,8 +5,9 @@ Gates:
   1. Entry time window
   2. VIX range (hard ceiling 18)
   3. Max concurrent open positions (5)
-  4. Lot sizing: keep premium risk ≤ 2% of capital per trade
+  4. Lot sizing: keep premium risk <= 3% of capital per trade
   5. Confluence minimum (3 of 5 factors)
+  6. Macro sentiment filter (blocks counter-macro trades)
 """
 from __future__ import annotations
 
@@ -63,7 +64,15 @@ class RiskAgent:
 
     def evaluate(self, signal: StockSignal, vix: float,
                   open_positions: int, lot_size: int,
-                  now: Optional[dtime] = None) -> RiskDecision:
+                  now: Optional[dtime] = None,
+                  sector: str = "",
+                  macro: Optional[object] = None) -> RiskDecision:
+        """
+        Gate and size a signal.
+
+        sector : the stock's sector string (e.g. "BANKING", "IT") — used for macro filter.
+        macro  : MacroSentiment from SentimentEngine — if None, macro filter is skipped.
+        """
         now = now or datetime.now().time()
 
         # 1. Time window
@@ -82,34 +91,53 @@ class RiskAgent:
         if open_positions >= self.max_positions:
             return RiskDecision(False, f"Max {self.max_positions} positions reached")
 
-        # 4. Confluence minimum
-        if signal.confluence_score < self.confluence_min:
+        # 4. Macro sentiment filter
+        if macro is not None and sector:
+            if signal.direction == "CALL" and not macro.allows_call(sector):
+                return RiskDecision(
+                    False,
+                    f"Macro veto: {sector} has NEGATIVE bias (score={macro.overall_score:+d}) — avoid CALL",
+                )
+            if signal.direction == "PUT" and not macro.allows_put(sector):
+                return RiskDecision(
+                    False,
+                    f"Macro veto: {sector} has POSITIVE bias (score={macro.overall_score:+d}) — avoid PUT",
+                )
+            # Require stronger confluence when macro is broadly bearish (calls need more proof)
+            effective_confluence_min = self.confluence_min
+            if macro.is_bearish() and signal.direction == "CALL":
+                effective_confluence_min = self.confluence_min + 1
+        else:
+            effective_confluence_min = self.confluence_min
+
+        # 5. Confluence minimum
+        if signal.confluence_score < effective_confluence_min:
             return RiskDecision(
                 False,
-                f"Confluence {signal.confluence_score}/5 < min {self.confluence_min}")
+                f"Confluence {signal.confluence_score}/5 < min {effective_confluence_min}")
 
-        # 5. Position sizing (risk ≤ 2% of capital on premium)
+        # 6. Position sizing (risk <= max_risk_pct% of capital on premium)
         premium = signal.expected_premium
         if premium <= 0:
             return RiskDecision(False, "Expected premium is 0 — option data missing")
 
-        # Risk = premium paid × lots × lot_size (entire premium is at risk for options buyers)
         max_risk_inr = self.capital * self.max_risk_pct / 100
         max_lots = int(max_risk_inr / (premium * lot_size)) if (premium * lot_size) > 0 else 0
 
         if max_lots < 1:
             return RiskDecision(
                 False,
-                f"Risk cap: ₹{max_risk_inr:.0f} / (₹{premium:.2f}×{lot_size}) = 0 lots",
+                f"Risk cap: Rs{max_risk_inr:.0f} / (Rs{premium:.2f}x{lot_size}) = 0 lots",
             )
 
         sized_lots = min(max_lots, signal.lots if signal.lots > 0 else max_lots)
         sl_price = round(premium * (1 - self.sl_pct), 2)
         target_price = round(premium * (1 + self.target_pct), 2)
 
+        macro_note = f" | Macro={macro.overall_score:+d}" if macro is not None else ""
         return RiskDecision(
             approved=True,
-            reason="Approved",
+            reason=f"Approved{macro_note}",
             sized_lots=sized_lots,
             sl_price=sl_price,
             target_price=target_price,

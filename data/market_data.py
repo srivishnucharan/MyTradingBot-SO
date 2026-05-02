@@ -19,6 +19,9 @@ from data.security_master import SecurityMaster
 
 log = logging.getLogger(__name__)
 
+# Forward reference for type hint (avoids circular import)
+_MacroSentiment = None
+
 
 @dataclass
 class StockMarketContext:
@@ -40,6 +43,7 @@ class StockMarketContext:
     hist_vol_30: float           # 30-day historical volatility (annualised)
     earnings_next: Optional[date]
     fii_sector_trend: str        # "POSITIVE" | "NEUTRAL" | "NEGATIVE"
+    macro_sentiment: Optional[object] = None  # MacroSentiment — set by orchestrator/backtest
     timestamp: datetime = field(default_factory=datetime.now)
 
 

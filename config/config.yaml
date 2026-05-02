@@ -18,6 +18,16 @@ risk:
   max_dte: 35                   # Maximum DTE for new entries
   confluence_min: 3             # Minimum confluence factors (of 5) required
 
+sentiment:
+  enabled: true
+  # Block trades that go against macro sector bias
+  macro_filter_enabled: true
+  # Crude oil thresholds (USD/bbl)
+  crude_high_level: 88.0
+  crude_low_level:  65.0
+  # When macro score drops below this, require +1 confluence for CALL signals
+  bearish_score_threshold: -20
+
 monitoring:
   refresh_interval_seconds: 3600   # Check hourly (swing trades)
   market_open_time: "09:15"

@@ -24,6 +24,7 @@ import yaml
 from data.dhan_client import DhanClient
 from data.market_data import MarketData
 from data.security_master import SecurityMaster
+from data.sentiment_engine import SentimentEngine, MacroSentiment
 from data import store
 from agents.signal_agent import SignalAgent
 from agents.risk_agent import RiskAgent
@@ -70,6 +71,8 @@ class Orchestrator:
         self.market_close = self._parse_time(mon.get("market_close_time", "15:30"))
         self._vix_at_open: float = 0.0
         self._vix_set = False
+        self._macro: Optional[MacroSentiment] = None
+        self._macro_date: Optional[date] = None
 
     # ── public ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +95,7 @@ class Orchestrator:
                     continue
 
                 self._capture_vix()
+                self._capture_macro()
                 self.monitor_agent.check_all()
 
                 for instr in self.cfg["instruments"]:
@@ -112,6 +116,7 @@ class Orchestrator:
         if not self._market_open():
             return {"market_status": "CLOSED"}
         self._capture_vix()
+        self._capture_macro()
         self.monitor_agent.check_all()
         results = []
         for instr in self.cfg["instruments"]:
@@ -153,6 +158,8 @@ class Orchestrator:
             vix=ctx.vix,
             open_positions=len(open_trades),
             lot_size=instr["lot_size"],
+            sector=ctx.sector,
+            macro=self._macro,
         )
 
         if not decision.approved:
@@ -226,6 +233,24 @@ class Orchestrator:
                 log.info("VIX at open: %.1f", self._vix_at_open)
             except Exception as e:
                 log.warning("VIX capture failed: %s", e)
+
+    def _capture_macro(self):
+        """Fetch global macro sentiment once per trading day."""
+        today = date.today()
+        if self._macro_date == today:
+            return  # already fetched today
+        try:
+            self._macro = SentimentEngine.fetch_live()
+            self._macro_date = today
+            log.info("Macro sentiment: score=%+d | %s",
+                     self._macro.overall_score, " | ".join(self._macro.signals[:3]))
+            if self._macro.signals:
+                log.info("Sector bias: %s", {
+                    s: v for s, v in self._macro.sector_bias.items() if v != "NEUTRAL"
+                })
+        except Exception as e:
+            log.warning("Macro sentiment fetch failed: %s — using neutral", e)
+            self._macro = None
 
     def _market_open(self) -> bool:
         now = datetime.now()
