@@ -1,12 +1,14 @@
 """
 signal_agent.py
-Evaluates all 5 strategies for a given stock and returns the highest-priority signal.
+Evaluates all 7 strategies for a given stock and returns the highest-priority signal.
 Priority order (from highest conviction to lowest):
-  1. Pre-Earnings Drift  — highest POP, event-driven
-  2. FII Sector Momentum — institutional footprint
-  3. 52-Week High        — momentum, no overhead resistance
-  4. Breakout Retest     — technical edge, high RR
-  5. Fibonacci Pullback  — trend continuation
+  1. Post-Earnings Move  — confirmed catalyst, CALL or PUT based on direction
+  2. Pre-Earnings Drift  — event-driven drift into results
+  3. FII Sector Momentum — institutional buying footprint
+  4. Bear Momentum Put   — institutional selling footprint (PUT)
+  5. 52-Week High        — momentum, no overhead resistance
+  6. Breakout Retest     — technical edge, high RR
+  7. Fibonacci Pullback  — trend continuation
 """
 from __future__ import annotations
 
@@ -14,8 +16,10 @@ import logging
 from typing import Optional
 
 from strategies.base import StockSignal
+from strategies.post_earnings_move import PostEarningsMoveStrategy
 from strategies.pre_earnings_drift import PreEarningsDriftStrategy
 from strategies.fii_sector_momentum import FIISectorMomentumStrategy
+from strategies.bear_momentum_put import BearMomentumPutStrategy
 from strategies.fiftytwo_week_high import FiftyTwoWeekHighStrategy
 from strategies.breakout_retest import BreakoutRetestStrategy
 from strategies.fib_pullback import FibPullbackStrategy
@@ -26,8 +30,10 @@ log = logging.getLogger(__name__)
 
 class SignalAgent:
     PRIORITY = [
+        "Post-Earnings Move",
         "Pre-Earnings Drift",
         "FII Sector Momentum",
+        "Bear Momentum Put",
         "52-Week High",
         "Breakout Retest",
         "Fibonacci Pullback",
@@ -35,8 +41,10 @@ class SignalAgent:
 
     def __init__(self):
         self._strategies = {
+            "Post-Earnings Move":  PostEarningsMoveStrategy(),
             "Pre-Earnings Drift":  PreEarningsDriftStrategy(),
             "FII Sector Momentum": FIISectorMomentumStrategy(),
+            "Bear Momentum Put":   BearMomentumPutStrategy(),
             "52-Week High":        FiftyTwoWeekHighStrategy(),
             "Breakout Retest":     BreakoutRetestStrategy(),
             "Fibonacci Pullback":  FibPullbackStrategy(),

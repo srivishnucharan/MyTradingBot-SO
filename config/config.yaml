@@ -8,9 +8,9 @@ execution:
 
 risk:
   capital: 500000               # Total trading capital (₹5 lakh)
-  max_risk_per_trade_pct: 2.0   # Max % of capital per trade (premium at risk)
+  max_risk_per_trade_pct: 3.0   # Max % of capital per trade (premium at risk)
   max_concurrent_positions: 5   # Up to 5 open positions across stocks
-  sl_pct: 0.30                  # Stop loss: 30% of premium paid
+  sl_pct: 0.40                  # Stop loss: 40% of premium paid
   target_pct: 1.50              # Target: 150% of premium (2.5x)
   vix_max: 18.0                 # Hard VIX ceiling (India VIX)
   vix_min: 10.0                 # Soft floor
@@ -27,11 +27,19 @@ monitoring:
 
 strategies:
   priority:
+    - "Post-Earnings Move"
     - "Pre-Earnings Drift"
     - "FII Sector Momentum"
+    - "Bear Momentum Put"
     - "52-Week High"
     - "Breakout Retest"
     - "Fibonacci Pullback"
+
+  post_earnings_move:
+    enabled: true
+    move_threshold_pct: 3.0     # Minimum single-day move % to qualify (earnings reaction)
+    lookback_days: 5            # Look for the event within last 5 sessions
+    reversal_tolerance_pct: 3.0 # Ignore signal if spot has reversed more than this % from event close
 
   pre_earnings_drift:
     enabled: true
@@ -56,6 +64,14 @@ strategies:
     volume_multiplier: 1.5       # Breakout volume must be 1.5x avg
     retest_max_days: 10          # Maximum days to wait for retest
     rsi_min: 45
+
+  bear_momentum_put:
+    enabled: true
+    min_negative_days: 3        # Min consecutive negative closes in last 5 sessions
+    bounce_min_pct: 0.3         # Enter on bounce of at least 0.3% from recent low
+    bounce_max_pct: 3.0         # Bounce must be less than 3% (not a full reversal)
+    rsi_min: 35                 # RSI floor (not already deeply oversold)
+    rsi_max: 60                 # RSI ceiling (not yet overbought)
 
   fibonacci_pullback:
     enabled: true

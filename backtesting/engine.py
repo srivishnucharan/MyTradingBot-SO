@@ -158,8 +158,10 @@ class BacktestEngine:
                     if entry_premium < 1.0:
                         continue
 
-                    sl_price = round(entry_premium * 0.70, 2)
-                    target_price = round(entry_premium * 2.50, 2)
+                    sl_pct = self.cfg["risk"].get("sl_pct", 0.30)
+                    target_pct = self.cfg["risk"].get("target_pct", 1.50)
+                    sl_price = round(entry_premium * (1 - sl_pct), 2)
+                    target_price = round(entry_premium * (1 + target_pct), 2)
 
                     bt = BacktestTrade(
                         run_id=self.run_id,

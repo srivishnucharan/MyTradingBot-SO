@@ -75,6 +75,37 @@ class BaseStrategy:
 
         return len(met), met
 
+    @staticmethod
+    def check_bearish_confluence(ctx: "StockMarketContext", vix_min: float = 12.0) -> tuple[int, list[str]]:
+        """
+        Bearish confluence (PUT strategies). Need 3 of 5.
+          1. Stock below 20-day EMA
+          2. RSI 35-55 (weak, not yet oversold)
+          3. Volume >= 1.5x 20-day average
+          4. VIX > vix_min (some fear in market)
+          5. Sector FII trend negative or neutral
+        """
+        met = []
+        volumes = ctx.bars_daily["volume"].tolist()
+        today_vol = volumes[-1] if volumes else 0
+
+        if ctx.spot < ctx.ema_20:
+            met.append("below_ema20")
+
+        if 35 <= ctx.rsi_14 <= 55:
+            met.append("rsi_35_55")
+
+        if ctx.vol_avg_20 > 0 and today_vol >= ctx.vol_avg_20 * 1.5:
+            met.append("volume_confirm")
+
+        if ctx.vix > vix_min:
+            met.append("vix_elevated")
+
+        if ctx.fii_sector_trend in ("NEGATIVE", "NEUTRAL"):
+            met.append("fii_negative")
+
+        return len(met), met
+
     # ── option selection helpers ──────────────────────────────────────────────
 
     @staticmethod
