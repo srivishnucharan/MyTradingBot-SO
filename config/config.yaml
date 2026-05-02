@@ -1,0 +1,208 @@
+# MyTradingBot-SO — Nifty 50 Stock Options Configuration
+# Strategy: 5-strategy swing options buyer framework on Dhan API
+# Target: High-POP, high-RR swing trades (20-35 DTE, ATM or 1-ITM)
+
+execution:
+  mode: PAPER                   # BACKTEST | PAPER | LIVE
+  slippage_buffer_pct: 0.5
+
+risk:
+  capital: 500000               # Total trading capital (₹5 lakh)
+  max_risk_per_trade_pct: 2.0   # Max % of capital per trade (premium at risk)
+  max_concurrent_positions: 5   # Up to 5 open positions across stocks
+  sl_pct: 0.30                  # Stop loss: 30% of premium paid
+  target_pct: 1.50              # Target: 150% of premium (2.5x)
+  vix_max: 18.0                 # Hard VIX ceiling (India VIX)
+  vix_min: 10.0                 # Soft floor
+  min_dte: 20                   # Minimum DTE for new entries
+  max_dte: 35                   # Maximum DTE for new entries
+  confluence_min: 3             # Minimum confluence factors (of 5) required
+
+monitoring:
+  refresh_interval_seconds: 3600   # Check hourly (swing trades)
+  market_open_time: "09:15"
+  market_close_time: "15:30"
+  entry_window_start: "09:45"      # Wait for market to settle
+  entry_window_end: "14:00"
+
+strategies:
+  priority:
+    - "Pre-Earnings Drift"
+    - "FII Sector Momentum"
+    - "52-Week High"
+    - "Breakout Retest"
+    - "Fibonacci Pullback"
+
+  pre_earnings_drift:
+    enabled: true
+    days_before_earnings: 10     # Enter this many days before earnings
+    days_before_exit: 1          # Exit this many days before earnings
+    rsi_min: 50                  # Minimum RSI at entry
+    ema_above: true              # Require stock above 20-day EMA
+
+  fii_sector_momentum:
+    enabled: true
+    consecutive_buying_days: 3   # Min days of FII net buying in sector
+    pullback_max_days: 2         # Enter on 1-2 day pullback
+
+  fiftytwo_week_high:
+    enabled: true
+    volume_multiplier: 2.0       # Volume must be 2x 20-day average
+    consolidation_days: 2        # Wait for consolidation above the high
+
+  breakout_retest:
+    enabled: true
+    consolidation_lookback: 20   # Days for consolidation detection
+    volume_multiplier: 1.5       # Breakout volume must be 1.5x avg
+    retest_max_days: 10          # Maximum days to wait for retest
+    rsi_min: 45
+
+  fibonacci_pullback:
+    enabled: true
+    swing_lookback: 60           # Days to find swing highs/lows
+    fib_levels: [0.50, 0.618]    # Entry Fib levels
+    rsi_min: 40
+    rsi_max: 55
+    sl_fib: 0.786                # Stop loss at 78.6% Fib
+
+# Nifty 50 stock universe for options trading
+instruments:
+  - symbol: RELIANCE
+    lot_size: 250
+    sector: ENERGY
+    strike_gap: 50
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: HDFCBANK
+    lot_size: 550
+    sector: BANKING
+    strike_gap: 10
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: ICICIBANK
+    lot_size: 700
+    sector: BANKING
+    strike_gap: 10
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: INFY
+    lot_size: 300
+    sector: IT
+    strike_gap: 20
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: TCS
+    lot_size: 175
+    sector: IT
+    strike_gap: 50
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: BAJFINANCE
+    lot_size: 125
+    sector: FINANCE
+    strike_gap: 50
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: BHARTIARTL
+    lot_size: 950
+    sector: TELECOM
+    strike_gap: 10
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: TATAMOTORS
+    lot_size: 1425
+    sector: AUTO
+    strike_gap: 5
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: WIPRO
+    lot_size: 1500
+    sector: IT
+    strike_gap: 5
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: AXISBANK
+    lot_size: 625
+    sector: BANKING
+    strike_gap: 10
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: KOTAKBANK
+    lot_size: 400
+    sector: BANKING
+    strike_gap: 20
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: SBIN
+    lot_size: 1500
+    sector: BANKING
+    strike_gap: 5
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: LT
+    lot_size: 150
+    sector: INFRASTRUCTURE
+    strike_gap: 50
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: HCLTECH
+    lot_size: 700
+    sector: IT
+    strike_gap: 10
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: SUNPHARMA
+    lot_size: 700
+    sector: PHARMA
+    strike_gap: 10
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: MARUTI
+    lot_size: 100
+    sector: AUTO
+    strike_gap: 100
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: TITAN
+    lot_size: 375
+    sector: CONSUMER
+    strike_gap: 25
+    earnings_months: [1, 4, 7, 10]
+    enabled: true
+
+  - symbol: ASIANPAINT
+    lot_size: 200
+    sector: CONSUMER
+    strike_gap: 50
+    earnings_months: [1, 4, 7, 10]
+    enabled: false
+
+  - symbol: NTPC
+    lot_size: 2250
+    sector: UTILITIES
+    strike_gap: 5
+    earnings_months: [1, 4, 7, 10]
+    enabled: false
+
+  - symbol: POWERGRID
+    lot_size: 2700
+    sector: UTILITIES
+    strike_gap: 5
+    earnings_months: [1, 4, 7, 10]
+    enabled: false

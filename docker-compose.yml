@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+  dashboard:
+    build: .
+    ports:
+      - "8002:8002"
+    volumes:
+      - botdata:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/secrets.env:/app/config/secrets.env
+    env_file: config/secrets.env
+    environment:
+      - COMPOSE_PROJECT=mytradingbot-so
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/api/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  bot:
+    build: .
+    command: python scripts/run_paper.py
+    volumes:
+      - botdata:/app/logs
+    env_file: config/secrets.env
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  botdata:

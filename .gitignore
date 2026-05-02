@@ -1,0 +1,25 @@
+# Credentials — never commit these
+.env
+config/secrets.env
+
+# Runtime data
+logs/
+data/scrip_master.csv
+data/*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Local notes
+SSH.txt
+*.txt.bak
