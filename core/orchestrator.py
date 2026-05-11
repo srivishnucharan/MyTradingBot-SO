@@ -13,11 +13,14 @@ Cycle (every hour during market hours for PAPER/LIVE):
 from __future__ import annotations
 
 import logging
+import os
 import time
 from calendar import monthrange
 from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Optional
+
+_RESTART_FLAG = Path("logs/restart.flag")
 
 import yaml
 
@@ -78,6 +81,8 @@ class Orchestrator:
 
     def run_forever(self):
         log.info("Orchestrator starting — mode=%s", self.mode)
+        Path("logs").mkdir(exist_ok=True)
+        Path("logs/bot.pid").write_text(str(os.getpid()))
         if self.notifier:
             self.notifier.start(self)
         try:
@@ -85,10 +90,16 @@ class Orchestrator:
         finally:
             if self.notifier:
                 self.notifier.stop()
+            Path("logs/bot.pid").unlink(missing_ok=True)
 
     def _run_loop(self):
         while True:
             try:
+                if _RESTART_FLAG.exists():
+                    _RESTART_FLAG.unlink()
+                    log.info("Restart flag detected — reloading Dhan token")
+                    self.dhan.reload_token()
+
                 if not self._market_open():
                     log.debug("Market closed — sleeping 60s")
                     time.sleep(60)

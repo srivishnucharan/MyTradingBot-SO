@@ -3,7 +3,7 @@ post_earnings_move.py
 Strategy — Post-Earnings Move (Re-Rating / Downgrade)
 POP: 60-70% | R:R: 1:2.5 | Frequency: 4-8 per quarter
 
-After a stock makes a large single-day move (>=3%) following results:
+After a stock makes a large single-day move (>=2%) following results:
 - Large UP move  -> buy CALL  (re-rating, institutional accumulation)
 - Large DOWN move -> buy PUT  (downgrade, institutional distribution)
 
@@ -27,7 +27,7 @@ class PostEarningsMoveStrategy(BaseStrategy):
     NAME_CALL = "Post-Earnings Re-Rating"
     NAME_PUT  = "Post-Earnings Downgrade"
 
-    MOVE_THRESHOLD = 0.03   # 3% single-day move triggers the setup
+    MOVE_THRESHOLD = 0.02   # 2% single-day move triggers the setup
     LOOKBACK_DAYS  = 5      # Look for the event within last 5 sessions
     REVERSAL_TOL   = 0.03   # Ignore if spot has reversed >3% from event close
     CONFLUENCE_MIN = 3

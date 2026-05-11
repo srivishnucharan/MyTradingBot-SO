@@ -10,13 +10,16 @@ risk:
   capital: 500000               # Total trading capital (₹5 lakh)
   max_risk_per_trade_pct: 3.0   # Max % of capital per trade (premium at risk)
   max_concurrent_positions: 5   # Up to 5 open positions across stocks
-  sl_pct: 0.40                  # Stop loss: 40% of premium paid
-  target_pct: 1.50              # Target: 150% of premium (2.5x)
+  sl_pct: 0.40                  # Stop loss: 40% of premium paid (swing mode)
+  target_pct: 1.50              # Target: 150% of premium (swing mode, 2.5x)
+  intraday_close: true         # When true: close all positions EOD, no overnight carry
+  intraday_sl_pct: 0.20         # Intraday SL: 20% of premium
+  intraday_target_pct: 0.40     # Intraday target: 40% of premium (1:2 R:R)
   vix_max: 18.0                 # Hard VIX ceiling (India VIX)
   vix_min: 10.0                 # Soft floor
   min_dte: 20                   # Minimum DTE for new entries
   max_dte: 35                   # Maximum DTE for new entries
-  confluence_min: 3             # Minimum confluence factors (of 5) required
+  confluence_min: 3             # Minimum confluence factors required (5 base + 2 OI when available)
 
 sentiment:
   enabled: true
@@ -47,7 +50,7 @@ strategies:
 
   post_earnings_move:
     enabled: true
-    move_threshold_pct: 3.0     # Minimum single-day move % to qualify (earnings reaction)
+    move_threshold_pct: 2.0     # Minimum single-day move % to qualify (earnings reaction)
     lookback_days: 5            # Look for the event within last 5 sessions
     reversal_tolerance_pct: 3.0 # Ignore signal if spot has reversed more than this % from event close
 

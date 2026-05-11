@@ -57,6 +57,16 @@ class DhanClient:
         self._initialised = True
         log.info("Dhan client initialised — client_id=%s***", self.client_id[:4])
 
+    def reload_token(self):
+        from dotenv import load_dotenv
+        _env = Path(__file__).parent.parent / "config" / "secrets.env"
+        load_dotenv(_env, override=True)
+        self.client_id = os.getenv("DHAN_CLIENT_ID")
+        self.access_token = os.getenv("DHAN_ACCESS_TOKEN")
+        self.ctx = DhanContext(self.client_id, self.access_token)
+        self.dhan = dhanhq(self.ctx)
+        log.info("Dhan token reloaded — client_id=%s***", (self.client_id or "")[:4])
+
     # ── option chain ──────────────────────────────────────────────────────────
 
     def option_chain(self, security_id: int, segment: str, expiry: date) -> Optional[dict]:

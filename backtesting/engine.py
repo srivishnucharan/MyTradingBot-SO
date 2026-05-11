@@ -27,6 +27,7 @@ from data.dhan_client import DhanClient
 from data.security_master import SecurityMaster
 from data.market_data import MarketData, StockMarketContext
 from data.sentiment_engine import SentimentEngine, MacroSentiment
+from data.bhavcopy import BhavCopyLoader
 from data import store
 from agents.signal_agent import SignalAgent
 from agents.risk_agent import RiskAgent
@@ -54,6 +55,7 @@ class BacktestTrade:
     exit_date: str = ""
     realised_pnl: float = 0.0
     exit_reason: str = "OPEN"
+    intraday: bool = False
 
 
 class BacktestEngine:
@@ -66,6 +68,8 @@ class BacktestEngine:
         self.master = SecurityMaster()
         self.signal_agent = SignalAgent()
         self.run_id = f"BT-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        symbols = [i["symbol"] for i in self.cfg["instruments"] if i.get("enabled", True)]
+        self.bhav = BhavCopyLoader(symbols)
 
     def run(self, months: int = 12) -> list[BacktestTrade]:
         store.init_db()
@@ -98,6 +102,10 @@ class BacktestEngine:
             start_date - timedelta(days=30), end_date
         )
         print(f"  Macro tickers loaded: {len(macro_bars)}")
+
+        # Pre-download NSE F&O Bhavcopy for real OI data (cached after first run)
+        print("\nFetching NSE Bhavcopy OI data (cached after first run)...")
+        self.bhav.prefetch(start_date, end_date)
 
         # Walk forward through trading days
         trades: list[BacktestTrade] = []
@@ -171,8 +179,13 @@ class BacktestEngine:
                     if entry_premium < 1.0:
                         continue
 
-                    sl_pct = self.cfg["risk"].get("sl_pct", 0.30)
-                    target_pct = self.cfg["risk"].get("target_pct", 1.50)
+                    intraday_close = self.cfg["risk"].get("intraday_close", False)
+                    if intraday_close:
+                        sl_pct = self.cfg["risk"].get("intraday_sl_pct", 0.20)
+                        target_pct = self.cfg["risk"].get("intraday_target_pct", 0.40)
+                    else:
+                        sl_pct = self.cfg["risk"].get("sl_pct", 0.30)
+                        target_pct = self.cfg["risk"].get("target_pct", 1.50)
                     sl_price = round(entry_premium * (1 - sl_pct), 2)
                     target_price = round(entry_premium * (1 + target_pct), 2)
 
@@ -190,6 +203,7 @@ class BacktestEngine:
                         lot_size=instr["lot_size"],
                         sl_price=sl_price,
                         target_price=target_price,
+                        intraday=intraday_close,
                     )
                     open_trades.append(bt)
 
@@ -227,6 +241,12 @@ class BacktestEngine:
         """Update trade with exit if conditions met. Returns True if closed."""
         bars = all_bars.get(trade.symbol)
         if bars is None:
+            return False
+
+        if trade.intraday:
+            # Intraday trades are held max 1 day — close on the first day after entry
+            if today > date.fromisoformat(trade.trade_date):
+                return self._check_intraday_exit(trade, today, bars)
             return False
 
         today_bars = bars[bars["date"] <= pd.Timestamp(today)]
@@ -279,6 +299,64 @@ class BacktestEngine:
 
         return False
 
+    def _check_intraday_exit(self, trade: BacktestTrade, today: date,
+                              bars: pd.DataFrame) -> bool:
+        """
+        Simulate intraday exit using today's OHLCV.
+        Uses the underlying's high/low to price the option at its extremes.
+        SL checked first (conservative — adverse move assumed before favorable).
+        Always closes: returns True unconditionally.
+        """
+        today_row = bars[bars["date"] == pd.Timestamp(today)]
+        today_bars = bars[bars["date"] <= pd.Timestamp(today)]
+        if today_row.empty or today_bars.empty:
+            # No data for today — close at entry price (flat)
+            trade.exit_price = trade.entry_price
+            trade.exit_date = today.isoformat()
+            trade.realised_pnl = 0.0
+            trade.exit_reason = "EOD_CLOSE"
+            return True
+
+        closes = today_bars["close"].tolist()
+        vol = self.md._hist_vol(closes, 30)
+        expiry = date.fromisoformat(trade.expiry)
+        dte = max((expiry - today).days, 1)
+
+        high = float(today_row.iloc[0]["high"])
+        low = float(today_row.iloc[0]["low"])
+        close = float(today_row.iloc[0]["close"])
+
+        # Intraday option price at extremes — CE benefits from high, PUT from low
+        if trade.option_type == "CE":
+            adverse_ltp = self.md.bs_price(low,  trade.strike, dte, vol, "CE")
+            favorable_ltp = self.md.bs_price(high, trade.strike, dte, vol, "CE")
+        else:
+            adverse_ltp = self.md.bs_price(high, trade.strike, dte, vol, "PE")
+            favorable_ltp = self.md.bs_price(low,  trade.strike, dte, vol, "PE")
+        eod_ltp = self.md.bs_price(close, trade.strike, dte, vol, trade.option_type)
+
+        # Conservative: check SL before target (assume adverse move comes first)
+        if adverse_ltp <= trade.sl_price:
+            trade.exit_price = trade.sl_price
+            trade.exit_date = today.isoformat()
+            trade.realised_pnl = (trade.sl_price - trade.entry_price) * trade.lots * trade.lot_size
+            trade.exit_reason = "STOPLOSS"
+            return True
+
+        if favorable_ltp >= trade.target_price:
+            trade.exit_price = trade.target_price
+            trade.exit_date = today.isoformat()
+            trade.realised_pnl = (trade.target_price - trade.entry_price) * trade.lots * trade.lot_size
+            trade.exit_reason = "TARGET"
+            return True
+
+        # Neither hit — forced EOD close
+        trade.exit_price = eod_ltp
+        trade.exit_date = today.isoformat()
+        trade.realised_pnl = (eod_ltp - trade.entry_price) * trade.lots * trade.lot_size
+        trade.exit_reason = "EOD_CLOSE"
+        return True
+
     def _build_backtest_ctx(self, instr: dict, bars: pd.DataFrame,
                               as_of: date,
                               macro: Optional[object] = None) -> Optional[StockMarketContext]:
@@ -300,24 +378,51 @@ class BacktestEngine:
         hist_vol = self.md._hist_vol(closes, 30)
         fii_trend = self.md._estimate_fii_trend(past_bars, self.master.sector(symbol))
 
-        # Minimal option chain (empty — strategies adapt when chain is unavailable)
-        # Build a synthetic chain for backtest pricing
         strike_gap = instr.get("strike_gap", 10)
         atm = round(spot / strike_gap) * strike_gap
-        chain_rows = []
-        for offset in range(-5, 6):
-            k = atm + offset * strike_gap
-            dte_approx = 25  # typical DTE during backtest
-            ce_ltp = self.md.bs_price(spot, k, dte_approx, hist_vol, "CE")
-            pe_ltp = self.md.bs_price(spot, k, dte_approx, hist_vol, "PE")
-            chain_rows.append({
-                "strike": k, "ce_ltp": ce_ltp, "pe_ltp": pe_ltp,
-                "ce_oi": 100000, "pe_oi": 100000,
-                "ce_sid": int(hash(f"{symbol}{k}CE") % 1_000_000 + 1),
-                "pe_sid": int(hash(f"{symbol}{k}PE") % 1_000_000 + 1),
-                "ce_iv": hist_vol * 100, "pe_iv": hist_vol * 100,
-                "ce_volume": 50000, "pe_volume": 50000,
-            })
+        dte_approx = 25  # typical DTE during backtest
+        expiry_for_chain = self._select_expiry_for_date(as_of)
+
+        # Try real OI from NSE Bhavcopy first; fall back to flat synthetic chain
+        oi_data = self.bhav.get_chain_oi(symbol, expiry_for_chain, as_of)
+        if oi_data:
+            chain_rows = []
+            for k, oi in sorted(oi_data.items()):
+                chain_rows.append({
+                    "strike":     k,
+                    "ce_ltp":     self.md.bs_price(spot, k, dte_approx, hist_vol, "CE"),
+                    "pe_ltp":     self.md.bs_price(spot, k, dte_approx, hist_vol, "PE"),
+                    "ce_oi":      oi["ce_oi"],
+                    "pe_oi":      oi["pe_oi"],
+                    "ce_oi_chg":  oi["ce_oi_chg"],
+                    "pe_oi_chg":  oi["pe_oi_chg"],
+                    "ce_sid":     int(hash(f"{symbol}{k}CE") % 1_000_000 + 1),
+                    "pe_sid":     int(hash(f"{symbol}{k}PE") % 1_000_000 + 1),
+                    "ce_iv":      hist_vol * 100,
+                    "pe_iv":      hist_vol * 100,
+                    "ce_volume":  50000,
+                    "pe_volume":  50000,
+                })
+        else:
+            # Synthetic fallback: equal OI across ±5 strikes (PCR neutral, no OI factors fire)
+            chain_rows = []
+            for offset in range(-5, 6):
+                k = atm + offset * strike_gap
+                chain_rows.append({
+                    "strike":     k,
+                    "ce_ltp":     self.md.bs_price(spot, k, dte_approx, hist_vol, "CE"),
+                    "pe_ltp":     self.md.bs_price(spot, k, dte_approx, hist_vol, "PE"),
+                    "ce_oi":      100000,
+                    "pe_oi":      100000,
+                    "ce_oi_chg":  0,
+                    "pe_oi_chg":  0,
+                    "ce_sid":     int(hash(f"{symbol}{k}CE") % 1_000_000 + 1),
+                    "pe_sid":     int(hash(f"{symbol}{k}PE") % 1_000_000 + 1),
+                    "ce_iv":      hist_vol * 100,
+                    "pe_iv":      hist_vol * 100,
+                    "ce_volume":  50000,
+                    "pe_volume":  50000,
+                })
 
         chain_df = pd.DataFrame(chain_rows)
 

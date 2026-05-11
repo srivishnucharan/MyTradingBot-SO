@@ -6,6 +6,7 @@ config/secrets.env
 logs/
 data/scrip_master.csv
 data/*.db
+data/bhavcopy_cache/
 
 # Python
 __pycache__/

@@ -27,7 +27,7 @@ class StockSignal:
     expected_premium: float
     confidence: str         # "HIGH" / "MEDIUM"
     rationale: str
-    confluence_score: int = 0   # how many of 5 factors met
+    confluence_score: int = 0   # how many confluence factors met (5 base + 2 OI when available)
     lots: int = 1
 
 
@@ -43,15 +43,18 @@ class BaseStrategy:
     def check_confluence(ctx: "StockMarketContext", vix_max: float = 18.0) -> tuple[int, list[str]]:
         """
         Returns (score, met_factors).
-        Score: count of confluence factors met (0-5).
+        Score: count of confluence factors met (0-7).
         Need at least 3 to proceed.
 
         Factors:
           1. Stock above 20-day EMA
           2. RSI between 50-65 (momentum, not overbought)
-          3. Volume on trigger candle ≥ 1.5x 20-day average
+          3. Volume on trigger candle >= 1.5x 20-day average
           4. India VIX < vix_max (18)
           5. Sector FII data positive or neutral
+          6. PCR < 0.8 (call-heavy chain = bullish OI sentiment)       [skipped if OI unavailable]
+          7. ATM CE OI > ATM PE OI (call concentration at ATM)         [skipped if OI unavailable]
+          8. ATM CE OI change > 0 (fresh call positions being built)   [skipped if OI unavailable]
         """
         met = []
         closes = ctx.bars_daily["close"].tolist()
@@ -73,17 +76,36 @@ class BaseStrategy:
         if ctx.fii_sector_trend in ("POSITIVE", "NEUTRAL"):
             met.append("fii_ok")
 
+        # OI-based factors — skipped gracefully when OI is unavailable (e.g. synthetic backtest chain)
+        total_ce_oi = ctx.chain["ce_oi"].sum()
+        total_pe_oi = ctx.chain["pe_oi"].sum()
+        if total_ce_oi > 0 and total_pe_oi > 0:
+            pcr = total_pe_oi / total_ce_oi
+            if pcr < 0.8:
+                met.append("pcr_bullish")
+            atm_row = ctx.chain[ctx.chain["strike"] == ctx.atm_strike]
+            if not atm_row.empty:
+                atm = atm_row.iloc[0]
+                if float(atm["ce_oi"]) > float(atm["pe_oi"]):
+                    met.append("oi_skew_call")
+                # CE OI building (day-over-day) = fresh call positions being added
+                if "ce_oi_chg" in ctx.chain.columns and float(atm["ce_oi_chg"]) > 0:
+                    met.append("oi_build_call")
+
         return len(met), met
 
     @staticmethod
     def check_bearish_confluence(ctx: "StockMarketContext", vix_min: float = 12.0) -> tuple[int, list[str]]:
         """
-        Bearish confluence (PUT strategies). Need 3 of 5.
+        Bearish confluence (PUT strategies). Need 3 of 8.
           1. Stock below 20-day EMA
           2. RSI 35-55 (weak, not yet oversold)
           3. Volume >= 1.5x 20-day average
           4. VIX > vix_min (some fear in market)
           5. Sector FII trend negative or neutral
+          6. PCR > 1.2 (put-heavy chain = bearish OI sentiment)       [skipped if OI unavailable]
+          7. ATM PE OI > ATM CE OI (put concentration at ATM)         [skipped if OI unavailable]
+          8. ATM PE OI change > 0 (fresh put positions being built)   [skipped if OI unavailable]
         """
         met = []
         volumes = ctx.bars_daily["volume"].tolist()
@@ -103,6 +125,22 @@ class BaseStrategy:
 
         if ctx.fii_sector_trend in ("NEGATIVE", "NEUTRAL"):
             met.append("fii_negative")
+
+        # OI-based factors — skipped gracefully when OI is unavailable (e.g. synthetic backtest chain)
+        total_ce_oi = ctx.chain["ce_oi"].sum()
+        total_pe_oi = ctx.chain["pe_oi"].sum()
+        if total_ce_oi > 0 and total_pe_oi > 0:
+            pcr = total_pe_oi / total_ce_oi
+            if pcr > 1.2:
+                met.append("pcr_bearish")
+            atm_row = ctx.chain[ctx.chain["strike"] == ctx.atm_strike]
+            if not atm_row.empty:
+                atm = atm_row.iloc[0]
+                if float(atm["pe_oi"]) > float(atm["ce_oi"]):
+                    met.append("oi_skew_put")
+                # PE OI building (day-over-day) = fresh put positions being added
+                if "pe_oi_chg" in ctx.chain.columns and float(atm["pe_oi_chg"]) > 0:
+                    met.append("oi_build_put")
 
         return len(met), met
 

@@ -86,14 +86,24 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     target_price  REAL
 );
 CREATE INDEX IF NOT EXISTS idx_bt_run ON backtest_trades(run_id, symbol);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,
+    underlying  TEXT NOT NULL,
+    mode        TEXT NOT NULL,
+    regime_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decisions ON decisions(underlying, mode, ts);
 """
 
 
 @contextmanager
 def connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=10)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
     try:
         yield con
         con.commit()
