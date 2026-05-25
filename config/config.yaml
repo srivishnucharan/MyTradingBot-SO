@@ -9,7 +9,7 @@ execution:
 risk:
   capital: 500000               # Total trading capital (₹5 lakh)
   max_risk_per_trade_pct: 3.0   # Max % of capital per trade (premium at risk)
-  max_concurrent_positions: 5   # Up to 5 open positions across stocks
+  max_concurrent_positions: 2   # Max 2 open positions at a time
   sl_pct: 0.40                  # Stop loss: 40% of premium paid (swing mode)
   target_pct: 1.50              # Target: 150% of premium (swing mode, 2.5x)
   intraday_close: true         # When true: close all positions EOD, no overnight carry
