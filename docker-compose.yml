@@ -24,6 +24,7 @@ services:
     command: python scripts/run_paper.py
     volumes:
       - botdata:/app/logs
+      - ./config/secrets.env:/app/config/secrets.env
     env_file: config/secrets.env
     depends_on:
       dashboard:
