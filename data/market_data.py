@@ -14,6 +14,12 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+try:
+    import yfinance as yf
+    _YF_AVAILABLE = True
+except ImportError:
+    _YF_AVAILABLE = False
+
 from data.dhan_client import DhanClient
 from data.security_master import SecurityMaster
 
@@ -70,9 +76,9 @@ class MarketData:
         hist_from = (today - timedelta(days=400)).strftime("%Y-%m-%d")  # ~15 months
         today_str = today.strftime("%Y-%m-%d")
 
-        # Fetch daily bars (aggregate from 60-min data)
+        # Fetch daily bars via yfinance (primary) or Dhan historical API
         try:
-            bars_daily = self._fetch_daily_bars(str(sec_id), eq_seg, hist_from, today_str)
+            bars_daily = self._fetch_daily_bars(str(sec_id), eq_seg, hist_from, today_str, symbol=symbol)
         except Exception as e:
             log.warning("Daily bars failed for %s: %s", symbol, e)
             return None
@@ -154,50 +160,49 @@ class MarketData:
     # ── private ───────────────────────────────────────────────────────────────
 
     def _fetch_daily_bars(self, sec_id: str, segment: str,
-                           from_date: str, to_date: str) -> pd.DataFrame:
-        """Fetch 60-min bars and aggregate to daily OHLCV."""
-        # Split into two 6-month chunks to handle API date limits
-        from_dt = datetime.strptime(from_date, "%Y-%m-%d")
-        to_dt = datetime.strptime(to_date, "%Y-%m-%d")
-        mid_dt = from_dt + (to_dt - from_dt) / 2
+                           from_date: str, to_date: str,
+                           symbol: str = "") -> pd.DataFrame:
+        """Fetch daily OHLCV bars via yfinance (primary) or Dhan historical API (fallback)."""
+        if _YF_AVAILABLE and symbol:
+            df = self._fetch_bars_yf(symbol, from_date, to_date)
+            if df is not None and len(df) >= 30:
+                return df
 
-        frames = []
-        for start, end in [
-            (from_dt, mid_dt),
-            (mid_dt + timedelta(days=1), to_dt),
-        ]:
-            try:
-                data = self.dhan.intraday_minute_data(
-                    security_id=sec_id,
-                    exchange_segment=segment,
-                    instrument="EQUITY",
-                    from_date=start.strftime("%Y-%m-%d"),
-                    to_date=end.strftime("%Y-%m-%d"),
-                    interval=60,
-                    oi=False,
-                )
-                if data and data.get("open"):
-                    frames.append(self._to_df(data))
-            except Exception as e:
-                log.debug("Bar chunk failed %s→%s: %s", start.date(), end.date(), e)
+        # Dhan historical_daily_data fallback
+        try:
+            data = self.dhan.historical_daily_data(
+                security_id=sec_id,
+                exchange_segment=segment,
+                instrument="EQUITY",
+                from_date=from_date,
+                to_date=to_date,
+            )
+            if data and data.get("open"):
+                df = self._to_df(data)
+                df["date"] = pd.to_datetime(df["timestamp"]).dt.date
+                df = df.sort_values("timestamp").drop_duplicates("date").reset_index(drop=True)
+                df["date"] = pd.to_datetime(df["date"])
+                return df[["date", "open", "high", "low", "close", "volume"]]
+        except Exception as e:
+            log.warning("Dhan historical_daily_data failed for sec_id=%s: %s", sec_id, e)
 
-        if not frames:
-            return pd.DataFrame()
+        return pd.DataFrame()
 
-        df = pd.concat(frames, ignore_index=True)
-        df = df.drop_duplicates("timestamp").sort_values("timestamp").reset_index(drop=True)
-
-        # Aggregate hourly → daily
-        df["date"] = pd.to_datetime(df["timestamp"]).dt.date
-        daily = df.groupby("date").agg(
-            open=("open", "first"),
-            high=("high", "max"),
-            low=("low", "min"),
-            close=("close", "last"),
-            volume=("volume", "sum"),
-        ).reset_index()
-        daily["date"] = pd.to_datetime(daily["date"])
-        return daily
+    @staticmethod
+    def _fetch_bars_yf(symbol: str, from_date: str, to_date: str) -> "pd.DataFrame | None":
+        try:
+            ticker = yf.Ticker(f"{symbol}.NS")
+            hist = ticker.history(start=from_date, end=to_date, auto_adjust=True)
+            if hist.empty:
+                return None
+            hist = hist.reset_index()
+            hist.columns = [c.lower() for c in hist.columns]
+            hist = hist.rename(columns={"index": "date", "stock splits": "stock_splits"})
+            hist["date"] = pd.to_datetime(hist["date"].astype(str).str[:10])
+            return hist[["date", "open", "high", "low", "close", "volume"]].sort_values("date").reset_index(drop=True)
+        except Exception as e:
+            log.debug("yfinance fetch failed for %s: %s", symbol, e)
+            return None
 
     def _to_df(self, data: dict) -> pd.DataFrame:
         df = pd.DataFrame({

@@ -104,6 +104,27 @@ class DhanClient:
 
     # ── historical OHLCV ──────────────────────────────────────────────────────
 
+    def historical_daily_data(self, security_id: str, exchange_segment: str,
+                               instrument: str, from_date: str, to_date: str,
+                               expiry_code: int = 0) -> dict:
+        """Fetch daily OHLCV bars (years of history). Use this for strategy data, not intraday."""
+        elapsed = time.time() - self._last_hist_call
+        if elapsed < self.HISTORICAL_RATE_LIMIT_SEC:
+            time.sleep(self.HISTORICAL_RATE_LIMIT_SEC - elapsed)
+
+        resp = self.dhan.historical_daily_data(
+            security_id=security_id,
+            exchange_segment=exchange_segment,
+            instrument_type=instrument,
+            expiry_code=expiry_code,
+            from_date=from_date,
+            to_date=to_date,
+        )
+        self._last_hist_call = time.time()
+        if resp.get("status") != "success":
+            raise RuntimeError(f"Historical daily data failed: {resp}")
+        return resp["data"]
+
     def intraday_minute_data(self, security_id: str, exchange_segment: str,
                               instrument: str, from_date: str, to_date: str,
                               interval: int = 60, oi: bool = False) -> dict:
