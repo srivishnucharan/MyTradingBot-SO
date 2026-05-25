@@ -16,7 +16,7 @@ import logging
 import os
 import time
 from calendar import monthrange
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -263,8 +263,10 @@ class Orchestrator:
             log.warning("Macro sentiment fetch failed: %s — using neutral", e)
             self._macro = None
 
+    _IST = timezone(timedelta(hours=5, minutes=30))
+
     def _market_open(self) -> bool:
-        now = datetime.now()
+        now = datetime.now(self._IST)
         if now.weekday() >= 5:
             return False
         return self.market_open <= now.time() <= self.market_close

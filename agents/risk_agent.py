@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Optional
 
 from strategies.base import StockSignal
@@ -73,7 +73,8 @@ class RiskAgent:
         sector : the stock's sector string (e.g. "BANKING", "IT") — used for macro filter.
         macro  : MacroSentiment from SentimentEngine — if None, macro filter is skipped.
         """
-        now = now or datetime.now().time()
+        _IST = timezone(timedelta(hours=5, minutes=30))
+        now = now or datetime.now(_IST).time()
 
         # 1. Time window
         if now < self.entry_start:
