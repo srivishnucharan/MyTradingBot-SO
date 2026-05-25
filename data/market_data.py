@@ -161,8 +161,7 @@ class MarketData:
 
     def _fetch_daily_bars(self, sec_id: str, segment: str,
                            from_date: str, to_date: str,
-                           symbol: str = "") -> pd.DataFrame:
-        """Fetch daily OHLCV bars via yfinance (primary) or Dhan historical API (fallback)."""
+                           symbol: Optional[str] = None) -> pd.DataFrame:
         if _YF_AVAILABLE and symbol:
             df = self._fetch_bars_yf(symbol, from_date, to_date)
             if df is not None and len(df) >= 30:
@@ -189,16 +188,16 @@ class MarketData:
         return pd.DataFrame()
 
     @staticmethod
-    def _fetch_bars_yf(symbol: str, from_date: str, to_date: str) -> "pd.DataFrame | None":
+    def _fetch_bars_yf(symbol: str, from_date: str, to_date: str) -> Optional[pd.DataFrame]:
         try:
             ticker = yf.Ticker(f"{symbol}.NS")
             hist = ticker.history(start=from_date, end=to_date, auto_adjust=True)
             if hist.empty:
                 return None
             hist = hist.reset_index()
-            hist.columns = [c.lower() for c in hist.columns]
-            hist = hist.rename(columns={"index": "date", "stock splits": "stock_splits"})
-            hist["date"] = pd.to_datetime(hist["date"].astype(str).str[:10])
+            hist["date"] = pd.to_datetime(hist["Date"]).dt.tz_localize(None).dt.normalize()
+            hist = hist.rename(columns={"Open": "open", "High": "high", "Low": "low",
+                                        "Close": "close", "Volume": "volume"})
             return hist[["date", "open", "high", "low", "close", "volume"]].sort_values("date").reset_index(drop=True)
         except Exception as e:
             log.debug("yfinance fetch failed for %s: %s", symbol, e)

@@ -107,11 +107,7 @@ class DhanClient:
     def historical_daily_data(self, security_id: str, exchange_segment: str,
                                instrument: str, from_date: str, to_date: str,
                                expiry_code: int = 0) -> dict:
-        """Fetch daily OHLCV bars (years of history). Use this for strategy data, not intraday."""
-        elapsed = time.time() - self._last_hist_call
-        if elapsed < self.HISTORICAL_RATE_LIMIT_SEC:
-            time.sleep(self.HISTORICAL_RATE_LIMIT_SEC - elapsed)
-
+        self._throttle_hist()
         resp = self.dhan.historical_daily_data(
             security_id=security_id,
             exchange_segment=exchange_segment,
@@ -128,10 +124,7 @@ class DhanClient:
     def intraday_minute_data(self, security_id: str, exchange_segment: str,
                               instrument: str, from_date: str, to_date: str,
                               interval: int = 60, oi: bool = False) -> dict:
-        elapsed = time.time() - self._last_hist_call
-        if elapsed < self.HISTORICAL_RATE_LIMIT_SEC:
-            time.sleep(self.HISTORICAL_RATE_LIMIT_SEC - elapsed)
-
+        self._throttle_hist()
         resp = self.dhan.intraday_minute_data(
             security_id=security_id,
             exchange_segment=exchange_segment,
@@ -145,6 +138,11 @@ class DhanClient:
         if resp.get("status") != "success":
             raise RuntimeError(f"Historical fetch failed: {resp}")
         return resp["data"]
+
+    def _throttle_hist(self) -> None:
+        elapsed = time.time() - self._last_hist_call
+        if elapsed < self.HISTORICAL_RATE_LIMIT_SEC:
+            time.sleep(self.HISTORICAL_RATE_LIMIT_SEC - elapsed)
 
     # ── quotes ─────────────────────────────────────────────────────────────────
 

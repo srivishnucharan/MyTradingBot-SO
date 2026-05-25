@@ -1,21 +1,5 @@
 {
   "permissions": {
-    "allow": [
-      "Read(//c//**)",
-      "Read(//mnt/**)",
-      "Bash(git init *)",
-      "Bash(git add *)",
-      "Bash(git commit -m ' *)",
-      "Bash(gh repo *)",
-      "Bash(git remote *)",
-      "Bash(git push *)",
-      "Read(//c/Users/Srilaxmi/**)",
-      "Bash(/c/Users/Srilaxmi/AppData/Local/Programs/Python/Python312/python -c 'import scipy; print\\('\\\\''scipy OK'\\\\''\\)')",
-      "Bash(/c/Users/Srilaxmi/AppData/Local/Programs/Python/Python312/python -m pip install scipy --quiet)",
-      "Bash(python -c ' *)",
-      "Bash(python scripts/run_backtest.py)",
-      "WebSearch",
-      "WebFetch(domain:nsearchives.nseindia.com)"
-    ]
+    "allow": ["Bash(*)", "Edit(*)", "Write(*)", "Read(*)"]
   }
 }

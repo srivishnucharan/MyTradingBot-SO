@@ -450,11 +450,14 @@ class BacktestEngine:
         )
 
     def _fetch_bars(self, instr: dict, from_date: date, to_date: date) -> Optional[pd.DataFrame]:
-        """Fetch daily OHLCV bars via yfinance (primary) or Dhan API (fallback)."""
         symbol = instr["symbol"]
         if _YF_AVAILABLE:
-            return self._fetch_bars_yf(symbol, from_date, to_date)
-        # Dhan fallback (requires valid access token)
+            return MarketData._fetch_bars_yf(
+                symbol,
+                from_date.strftime("%Y-%m-%d"),
+                (to_date + timedelta(days=1)).strftime("%Y-%m-%d"),
+            )
+        # Dhan fallback
         try:
             sec_id, seg = self.master.equity_info(symbol)
         except KeyError:
@@ -464,32 +467,6 @@ class BacktestEngine:
             from_date.strftime("%Y-%m-%d"),
             to_date.strftime("%Y-%m-%d"),
         )
-
-    @staticmethod
-    def _fetch_bars_yf(symbol: str, from_date: date, to_date: date) -> Optional[pd.DataFrame]:
-        """Download NSE stock daily bars from Yahoo Finance."""
-        ticker_sym = f"{symbol}.NS"
-        try:
-            ticker = yf.Ticker(ticker_sym)
-            hist = ticker.history(
-                start=from_date.isoformat(),
-                end=(to_date + timedelta(days=1)).isoformat(),
-                auto_adjust=True,
-            )
-            if hist.empty:
-                return None
-            hist = hist.reset_index()
-            hist["date"] = pd.to_datetime(hist["Date"]).dt.tz_localize(None).dt.normalize()
-            hist = hist.rename(columns={
-                "Open": "open", "High": "high", "Low": "low",
-                "Close": "close", "Volume": "volume",
-            })
-            hist = hist[["date", "open", "high", "low", "close", "volume"]].copy()
-            hist = hist.sort_values("date").reset_index(drop=True)
-            return hist
-        except Exception as e:
-            log.debug("yfinance fetch failed for %s: %s", symbol, e)
-            return None
 
     @staticmethod
     def _select_expiry_for_date(as_of: date) -> date:
