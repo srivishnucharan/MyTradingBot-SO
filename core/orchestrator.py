@@ -71,10 +71,12 @@ class Orchestrator:
         self.refresh_sec = mon.get("refresh_interval_seconds", 3600)
         self.market_open = self._parse_time(mon.get("market_open_time", "09:15"))
         self.market_close = self._parse_time(mon.get("market_close_time", "15:30"))
+        self.eod_exit_time = self._parse_time(mon.get("eod_exit_time", "15:15"))
         self._vix_at_open: float = 0.0
         self._vix_set = False
         self._macro: Optional[MacroSentiment] = None
         self._macro_date: Optional[date] = None
+        self._eod_exited_date: Optional[date] = None
 
     # ── public ─────────────────────────────────────────────────────────────────
 
@@ -107,6 +109,16 @@ class Orchestrator:
                 self._capture_vix()
                 self._capture_macro()
                 self.monitor_agent.check_all()
+
+                # EOD exit: squareoff all open positions by 15:15 IST
+                now_ist = datetime.now(self._IST)
+                today = now_ist.date()
+                if now_ist.time() >= self.eod_exit_time and self._eod_exited_date != today:
+                    self._eod_exited_date = today
+                    results = self.monitor_agent.squareoff_all("EOD_CLOSE")
+                    log.info("EOD squareoff at %s — closed %d positions", self.eod_exit_time, len(results))
+                    time.sleep(60)
+                    continue
 
                 for instr in self.cfg["instruments"]:
                     if not instr.get("enabled", True):

@@ -37,6 +37,7 @@ monitoring:
   market_close_time: "15:30"
   entry_window_start: "09:45"      # Wait for market to settle
   entry_window_end: "14:00"
+  eod_exit_time: "15:15"           # Force-exit all open positions by this time
 
 strategies:
   priority:
