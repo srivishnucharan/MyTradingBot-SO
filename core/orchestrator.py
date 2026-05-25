@@ -15,7 +15,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-from calendar import monthrange
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -181,41 +180,29 @@ class Orchestrator:
         return self.execution_agent.execute(signal, decision, instr["lot_size"])
 
     def _select_expiry(self, instr: dict) -> Optional[date]:
-        """Select monthly expiry with 20-35 DTE. Stock options expire last Thursday of month."""
+        """Select expiry from Dhan's live list, targeting 20-35 DTE.
+        Falls back to the nearest valid expiry >= min_dte if nothing fits exactly."""
         symbol = instr["symbol"]
         min_dte = self.cfg["risk"].get("min_dte", 20)
         max_dte = self.cfg["risk"].get("max_dte", 35)
 
         try:
             sec_id, seg = self.master.equity_info(symbol)
-            expiries = self.dhan.expiry_list(sec_id, seg)
+            expiries = sorted(self.dhan.expiry_list(sec_id, seg))
             today = date.today()
-            for e in sorted(expiries):
+            # Prefer expiry strictly in window
+            for e in expiries:
                 dte = (e - today).days
                 if min_dte <= dte <= max_dte:
                     return e
+            # Accept nearest expiry >= min_dte (handles when expiry falls just outside window)
+            candidates = [e for e in expiries if (e - today).days >= min_dte]
+            if candidates:
+                target = (min_dte + max_dte) // 2
+                return min(candidates, key=lambda e: abs((e - today).days - target))
         except Exception:
             pass
 
-        # Fallback: compute last Thursday of next 1-2 months
-        return self._last_thursday_in_range(date.today(), min_dte, max_dte)
-
-    @staticmethod
-    def _last_thursday_in_range(today: date, min_dte: int, max_dte: int) -> Optional[date]:
-        for months_ahead in range(1, 4):
-            year = today.year
-            month = today.month + months_ahead
-            if month > 12:
-                month -= 12
-                year += 1
-            last_day = monthrange(year, month)[1]
-            # Find last Thursday
-            candidate = date(year, month, last_day)
-            while candidate.weekday() != 3:  # Thursday = 3
-                candidate -= timedelta(days=1)
-            dte = (candidate - today).days
-            if min_dte <= dte <= max_dte:
-                return candidate
         return None
 
     @staticmethod
