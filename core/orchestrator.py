@@ -7,7 +7,7 @@ Cycle (every hour during market hours for PAPER/LIVE):
   2. For each enabled stock:
      a. Fetch StockMarketContext (daily bars, EMA, RSI, option chain, VIX)
      b. Select next monthly expiry with 20-35 DTE
-     c. If no open position for that stock: evaluate all 5 strategies
+     c. If no open position for that stock: evaluate all strategies
      d. If signal passes RiskAgent: execute via ExecutionAgent
 """
 from __future__ import annotations
@@ -27,6 +27,7 @@ from data.dhan_client import DhanClient
 from data.market_data import MarketData
 from data.security_master import SecurityMaster
 from data.sentiment_engine import SentimentEngine, MacroSentiment
+from data.features import build_features
 from data import store
 from agents.signal_agent import SignalAgent
 from agents.risk_agent import RiskAgent
@@ -74,6 +75,7 @@ class Orchestrator:
         self.eod_exit_time = self._parse_time(mon.get("eod_exit_time", "15:15"))
         self._vix_at_open: float = 0.0
         self._vix_set = False
+        self._vix_date: Optional[date] = None
         self._macro: Optional[MacroSentiment] = None
         self._macro_date: Optional[date] = None
         self._eod_exited_date: Optional[date] = None
@@ -109,6 +111,7 @@ class Orchestrator:
                 self._capture_vix()
                 self._capture_macro()
                 self.monitor_agent.check_all()
+                self.monitor_agent.check_shadows()
 
                 # EOD exit: squareoff all open positions by 15:15 IST
                 now_ist = datetime.now(self._IST)
@@ -125,14 +128,14 @@ class Orchestrator:
                         continue
                     self._try_entry(instr)
 
-                time.sleep(self.refresh_sec)
+                time.sleep(self._sleep_seconds())
 
             except KeyboardInterrupt:
                 log.info("Shutting down on user interrupt")
                 break
             except Exception as e:
                 log.exception("Loop error: %s", e)
-                time.sleep(self.refresh_sec)
+                time.sleep(self._sleep_seconds())
 
     def run_once(self) -> dict:
         if not self._market_open():
@@ -140,6 +143,7 @@ class Orchestrator:
         self._capture_vix()
         self._capture_macro()
         self.monitor_agent.check_all()
+        self.monitor_agent.check_shadows()
         results = []
         for instr in self.cfg["instruments"]:
             if not instr.get("enabled", True):
@@ -170,9 +174,24 @@ class Orchestrator:
         if ctx is None:
             return None
 
-        signal = self.signal_agent.evaluate(ctx)
-        if signal is None:
+        signals = self.signal_agent.evaluate_all(ctx)
+        if not signals:
             return None
+
+        # Highest-priority signal is the candidate; the rest become shadow
+        # trades so we still learn what the discarded strategies would have done
+        signal = signals[0]
+        features = build_features(ctx, signal, self._macro)
+        for other in signals[1:]:
+            other_feats = build_features(ctx, other, self._macro)
+            store.log_signal(
+                symbol=other.symbol, strategy=other.strategy,
+                direction=other.direction, confidence=other.confidence,
+                rationale=other.rationale, acted=False,
+                reject_reason="LOWER_PRIORITY", mode=self.mode,
+                features=other_feats,
+            )
+            self._open_shadow(other, "LOWER_PRIORITY", other_feats)
 
         risk = RiskAgent(config=self.cfg, vix_at_open=self._vix_at_open)
         decision = risk.evaluate(
@@ -186,10 +205,38 @@ class Orchestrator:
 
         if not decision.approved:
             log.info("[%s] %s rejected: %s", symbol, signal.strategy, decision.reason)
-            self.execution_agent.log_rejected_signal(signal, decision.reason)
+            self.execution_agent.log_rejected_signal(signal, decision.reason, features)
+            self._open_shadow(signal, f"REJECTED: {decision.reason}", features)
             return None
 
-        return self.execution_agent.execute(signal, decision, instr["lot_size"])
+        return self.execution_agent.execute(signal, decision, instr["lot_size"], features)
+
+    def _open_shadow(self, signal, reason: str, features: str):
+        """Record an untaken signal as a counterfactual to track forward."""
+        if not signal.security_id or signal.expected_premium <= 0:
+            return
+        if store.has_open_shadow(signal.symbol, signal.strategy,
+                                 signal.direction, self.mode):
+            return
+        risk = self.cfg.get("risk", {})
+        sl_pct = risk.get("sl_pct", 0.30)
+        target_pct = risk.get("target_pct", 1.50)
+        premium = signal.expected_premium
+        store.open_shadow({
+            "symbol": signal.symbol,
+            "strategy": signal.strategy,
+            "direction": signal.direction,
+            "strike": signal.strike,
+            "option_type": signal.option_type,
+            "expiry": signal.expiry.isoformat(),
+            "security_id": signal.security_id,
+            "entry_price": premium,
+            "sl_price": round(premium * (1 - sl_pct), 2),
+            "target_price": round(premium * (1 + target_pct), 2),
+            "reason_not_taken": reason,
+            "mode": self.mode,
+            "features": features,
+        })
 
     def _select_expiry(self, instr: dict) -> Optional[date]:
         """Select expiry from Dhan's live list, targeting 20-35 DTE.
@@ -234,7 +281,24 @@ class Orchestrator:
                     return candidate
         return None
 
+    def _sleep_seconds(self) -> float:
+        """Cap the refresh sleep so the loop wakes inside the EOD exit window
+        (15:15-15:30) instead of sleeping past market close and skipping the
+        squareoff."""
+        now = datetime.now(self._IST)
+        if now.time() < self.eod_exit_time:
+            eod = datetime.combine(now.date(), self.eod_exit_time, tzinfo=self._IST)
+            until_eod = (eod - now).total_seconds() + 5
+            return min(self.refresh_sec, max(60.0, until_eod))
+        return self.refresh_sec
+
     def _capture_vix(self):
+        # Reset baseline each trading day so spike detection compares
+        # against today's open, not the first day the process started
+        today = datetime.now(self._IST).date()
+        if self._vix_date != today:
+            self._vix_set = False
+            self._vix_date = today
         if not self._vix_set:
             try:
                 self._vix_at_open = self.md.fetch_vix()

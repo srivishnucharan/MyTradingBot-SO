@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import sys
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -89,8 +89,11 @@ def _detect_mode() -> str:
     return "PAPER"
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
 def _is_market_open() -> bool:
-    now = datetime.now()
+    now = datetime.now(_IST)
     if now.weekday() >= 5:
         return False
     return dtime(9, 15) <= now.time() <= dtime(15, 30)
@@ -252,7 +255,8 @@ def token_info():
             if not token:
                 return {"token": None, "masked": "not set"}
             masked = token[:10] + "…" + token[-4:] if len(token) > 14 else token[:4] + "…"
-            return {"token": token, "masked": masked}
+            # Never return the raw token — this endpoint is unauthenticated
+            return {"token": None, "masked": masked}
     return {"token": None, "masked": "not set"}
 
 

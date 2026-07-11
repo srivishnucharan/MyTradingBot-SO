@@ -7,11 +7,11 @@ Exits: TARGET | STOPLOSS | EXPIRY_APPROACHING | EMERGENCY (VIX spike) | MANUAL
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from math import log as mlog, sqrt, exp, erf
 from typing import Optional, TYPE_CHECKING
 
-from data.dhan_client import DhanClient
+from data.dhan_client import DhanClient, FNO_PRODUCT_TYPE
 from data.market_data import MarketData
 from data.security_master import SecurityMaster
 from data import store
@@ -23,6 +23,9 @@ log = logging.getLogger(__name__)
 
 EXPIRY_EXIT_DTE = 7      # Exit if ≤ 7 DTE remaining (avoid theta cliff)
 VIX_SPIKE_PCT = 20.0     # Emergency exit if VIX spikes 20% from session open
+SHADOW_TIMEOUT_DAYS = 15  # Close counterfactuals after this many calendar days
+_IST = timezone(timedelta(hours=5, minutes=30))
+_EOD_TIME = dtime(15, 15)  # matches monitoring.eod_exit_time default
 
 
 class MonitorAgent:
@@ -63,11 +66,17 @@ class MonitorAgent:
         expiry = date.fromisoformat(trade["expiry"])
         dte = (expiry - date.today()).days
 
+        # One LTP fetch per cycle: reused by all exit checks below and
+        # recorded as peak/trough excursion (MFE/MAE source)
+        ltp_now = self._get_option_ltp(security_id, symbol)
+        if ltp_now > 0:
+            store.update_trade_excursion(trade_id, ltp_now)
+
         # Exit if too close to expiry (theta crush)
         if dte <= EXPIRY_EXIT_DTE:
-            ltp = self._get_option_ltp(security_id, symbol)
+            ltp = ltp_now
             pnl = (ltp - fill_price) * qty
-            self._close(trade_id, ltp, pnl, "EXPIRY_EXIT")
+            self._exit_trade(trade, ltp, pnl, "EXPIRY_EXIT")
             log.info("[%s] %s EXPIRY EXIT (%d DTE) @ %.2f | PnL=%.0f",
                      self.mode, symbol, dte, ltp, pnl)
             if self.notifier:
@@ -78,9 +87,9 @@ class MonitorAgent:
         # VIX spike emergency
         vix_spiked, vix_now = self._vix_spike_detail()
         if vix_spiked:
-            ltp = self._get_option_ltp(security_id, symbol)
+            ltp = ltp_now
             pnl = (ltp - fill_price) * qty
-            self._close(trade_id, ltp, pnl, "VIX_EMERGENCY")
+            self._exit_trade(trade, ltp, pnl, "VIX_EMERGENCY")
             log.warning("[%s] %s VIX spike emergency exit @ %.2f", self.mode, symbol, ltp)
             if self.notifier:
                 self.notifier.notify_vix_spike(vix_now, self._vix_at_open)
@@ -88,12 +97,25 @@ class MonitorAgent:
                                           trade["direction"], ltp, pnl, "VIX SPIKE EMERGENCY")
             return {"trade_id": trade_id, "action": "EXIT_EMERGENCY", "pnl": pnl}
 
-        # In LIVE mode, Super Order handles SL/target broker-side
+        # In LIVE mode, Super Order handles SL/target broker-side.
+        # Reconcile: if the broker position is already flat (SL/target leg fired),
+        # close the DB trade so the symbol slot is freed.
         if self.mode == "LIVE":
+            net_qty = self._broker_net_qty(trade["security_id"])
+            if net_qty == 0:
+                ltp = ltp_now
+                pnl = (ltp - fill_price) * qty  # approximation — actual fill is broker-side
+                self._close(trade_id, ltp, pnl, "BROKER_CLOSED")
+                log.info("[LIVE] %s broker position flat — reconciled DB close | PnL~%.0f",
+                         symbol, pnl)
+                if self.notifier:
+                    self.notifier.notify_exit(trade_id, symbol, trade["strategy"],
+                                              trade["direction"], ltp, pnl, "BROKER SL/TARGET")
+                return {"trade_id": trade_id, "action": "EXIT_BROKER", "pnl": pnl}
             return {"trade_id": trade_id, "action": "HOLD", "dte": dte}
 
         # PAPER: simulate option LTP
-        ltp = self._get_option_ltp(security_id, symbol)
+        ltp = ltp_now
         if ltp <= 0:
             ltp = self._bs_estimate(trade)
         if ltp <= 0:
@@ -129,8 +151,10 @@ class MonitorAgent:
                 fill_price = float(trade.get("fill_price") or 0)
                 qty = int(trade["lots"]) * int(trade["lot_size"])
                 ltp = self._get_option_ltp(security_id, trade["symbol"])
+                if ltp > 0:
+                    store.update_trade_excursion(trade["trade_id"], ltp)
                 pnl = (ltp - fill_price) * qty
-                self._close(trade["trade_id"], ltp, pnl, reason)
+                self._exit_trade(trade, ltp, pnl, reason)
                 if self.notifier:
                     self.notifier.notify_exit(trade["trade_id"], trade["symbol"],
                                               trade["strategy"], trade["direction"],
@@ -142,6 +166,65 @@ class MonitorAgent:
 
     def _close(self, trade_id: str, exit_price: float, pnl: float, reason: str):
         store.close_trade(trade_id, exit_price, pnl, reason)
+
+    def _exit_trade(self, trade: dict, ltp: float, pnl: float, reason: str):
+        """Close a position. In LIVE mode the broker position is actually sold
+        before the DB trade is closed; raises if the broker exit cannot be
+        confirmed so the exit is retried next cycle instead of orphaning the
+        position."""
+        if self.mode == "LIVE":
+            self._live_exit(trade)
+        self._close(trade["trade_id"], ltp, pnl, reason)
+
+    def _live_exit(self, trade: dict):
+        # Cancel pending super-order legs so a leg can't fire after our exit
+        order_id = str(trade.get("super_order_id") or "")
+        if order_id:
+            for leg in ("TARGET_LEG", "STOP_LOSS_LEG", "ENTRY_LEG"):
+                try:
+                    self.dhan.cancel_super_order(order_id, leg)
+                except Exception as e:
+                    log.debug("cancel_super_order %s %s: %s", order_id, leg, e)
+
+        qty = int(trade["lots"]) * int(trade["lot_size"])
+        net_qty = self._broker_net_qty(trade["security_id"])
+        if net_qty is None:
+            raise RuntimeError(
+                f"Cannot verify broker position for {trade['symbol']} — exit deferred")
+        sell_qty = min(qty, net_qty)
+        if sell_qty <= 0:
+            log.info("[LIVE] %s already flat at broker — closing DB only", trade["symbol"])
+            return
+
+        segment = self.master.option_segment(trade["symbol"])
+        resp = self.dhan.place_order(
+            security_id=str(trade["security_id"]),
+            exchange_segment=segment,
+            transaction_type="SELL",
+            quantity=sell_qty,
+            order_type="MARKET",
+            product_type=FNO_PRODUCT_TYPE,
+            price=0,
+        )
+        if resp.get("status") != "success":
+            raise RuntimeError(f"LIVE exit SELL rejected for {trade['symbol']}: {resp}")
+        log.info("[LIVE] SELL %d %s placed for exit", sell_qty, trade["symbol"])
+
+    def _broker_net_qty(self, security_id) -> Optional[int]:
+        """Net broker quantity for a security. None = unknown (API error or
+        position not found in the book)."""
+        try:
+            resp = self.dhan.positions()
+            data = resp.get("data") if isinstance(resp, dict) else None
+            if not isinstance(data, list):
+                return None
+            for pos in data:
+                sid = str(pos.get("securityId") or pos.get("security_id") or "")
+                if sid == str(security_id):
+                    return int(pos.get("netQty") or pos.get("net_qty") or 0)
+        except Exception as e:
+            log.warning("Broker positions fetch failed: %s", e)
+        return None
 
     def _get_option_ltp(self, security_id: int, symbol: str) -> float:
         try:
@@ -167,6 +250,66 @@ class MonitorAgent:
         if opt == "CE":
             return max(spot_approx * N(d1) - strike * exp(-r * T) * N(d2), 0.05)
         return max(strike * exp(-r * T) * N(-d2) - spot_approx * N(-d1), 0.05)
+
+    # ── shadow trades (counterfactuals) ───────────────────────────────────────
+
+    def check_shadows(self) -> None:
+        """Advance open shadow trades: update excursions, capture first-day EOD
+        price, and close on target/SL/expiry/timeout using the same rules a
+        real swing position would follow."""
+        shadows = store.get_open_shadows(self.mode)
+        if not shadows:
+            return
+        prices = self._batch_ltp(
+            [int(s["security_id"]) for s in shadows if s["security_id"]])
+        now = datetime.now(_IST)
+        today = now.date()
+
+        for s in shadows:
+            try:
+                ltp = prices.get(str(s["security_id"]), 0.0)
+                if ltp <= 0:
+                    continue
+                peak = max(ltp, float(s["peak_ltp"] or ltp))
+                trough = min(ltp, float(s["trough_ltp"] or ltp))
+                open_date = date.fromisoformat(s["ts_open"][:10])
+                first_eod = None
+                if s["first_eod_price"] is None and (
+                        today > open_date or now.time() >= _EOD_TIME):
+                    first_eod = ltp
+                store.update_shadow(s["id"], peak, trough, first_eod)
+
+                target = float(s["target_price"] or 0)
+                sl = float(s["sl_price"] or 0)
+                dte = (date.fromisoformat(s["expiry"]) - today).days
+                age = (today - open_date).days
+                if target > 0 and ltp >= target:
+                    store.close_shadow(s["id"], ltp, "TARGET")
+                elif sl > 0 and ltp <= sl:
+                    store.close_shadow(s["id"], ltp, "STOPLOSS")
+                elif dte <= EXPIRY_EXIT_DTE:
+                    store.close_shadow(s["id"], ltp, "EXPIRY_EXIT")
+                elif age >= SHADOW_TIMEOUT_DAYS:
+                    store.close_shadow(s["id"], ltp, "TIMEOUT")
+            except Exception as e:
+                log.warning("Shadow check failed for id=%s: %s", s.get("id"), e)
+
+    def _batch_ltp(self, security_ids: list[int]) -> dict[str, float]:
+        """One quote call for many FNO securities: {security_id: ltp}."""
+        out: dict[str, float] = {}
+        if not security_ids:
+            return out
+        try:
+            resp = self.dhan.ltp({"NSE_FNO": security_ids})
+            data = resp.get("data", {}) if isinstance(resp, dict) else {}
+            for sid, row in (data.get("NSE_FNO", {}) or {}).items():
+                try:
+                    out[str(sid)] = float(row.get("last_price", 0))
+                except (TypeError, ValueError):
+                    pass
+        except Exception as e:
+            log.warning("Shadow batch LTP failed: %s", e)
+        return out
 
     def _vix_spike_detail(self) -> tuple[bool, float]:
         if self._vix_at_open <= 0:

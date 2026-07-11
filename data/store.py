@@ -95,7 +95,38 @@ CREATE TABLE IF NOT EXISTS decisions (
     regime_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_decisions ON decisions(underlying, mode, ts);
+
+CREATE TABLE IF NOT EXISTS shadow_trades (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_open         TEXT NOT NULL,
+    ts_close        TEXT,
+    symbol          TEXT NOT NULL,
+    strategy        TEXT NOT NULL,
+    direction       TEXT NOT NULL,
+    strike          REAL NOT NULL,
+    option_type     TEXT NOT NULL,
+    expiry          TEXT NOT NULL,
+    security_id     TEXT NOT NULL,
+    entry_price     REAL NOT NULL,
+    sl_price        REAL,
+    target_price    REAL,
+    reason_not_taken TEXT,
+    mode            TEXT NOT NULL,
+    features        TEXT,
+    first_eod_price REAL,
+    peak_ltp        REAL,
+    trough_ltp      REAL,
+    exit_price      REAL,
+    exit_reason     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_open ON shadow_trades(mode, ts_close);
 """
+
+# Columns added after initial deployments — applied via ALTER on init
+_MIGRATIONS = {
+    "trades": {"peak_ltp": "REAL", "trough_ltp": "REAL"},
+    "signals_log": {"features": "TEXT"},
+}
 
 
 @contextmanager
@@ -114,6 +145,11 @@ def connect():
 def init_db():
     with connect() as con:
         con.executescript(SCHEMA)
+        for table, cols in _MIGRATIONS.items():
+            existing = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+            for name, decl in cols.items():
+                if name not in existing:
+                    con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 # ── trades ─────────────────────────────────────────────────────────────────────
@@ -181,17 +217,93 @@ def save_order(trade_id: str, dhan_order_id: str):
 
 def log_signal(symbol: str, strategy: str, direction: str,
                 confidence: str, rationale: str, acted: bool,
-                reject_reason: str, mode: str):
+                reject_reason: str, mode: str, features: str = ""):
     with connect() as con:
         con.execute(
             """INSERT INTO signals_log
                (ts, symbol, strategy, direction, confidence, rationale,
-                acted, reject_reason, mode)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                acted, reject_reason, mode, features)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (
                 datetime.now().isoformat(), symbol, strategy, direction,
                 confidence, rationale, 1 if acted else 0, reject_reason, mode,
+                features,
             ),
+        )
+
+
+def update_trade_excursion(trade_id: str, ltp: float):
+    """Track best/worst premium seen while a trade is open (MFE/MAE source)."""
+    with connect() as con:
+        con.execute(
+            """UPDATE trades
+               SET peak_ltp   = MAX(COALESCE(peak_ltp, ?), ?),
+                   trough_ltp = MIN(COALESCE(trough_ltp, ?), ?)
+               WHERE trade_id=? AND ts_close IS NULL""",
+            (ltp, ltp, ltp, ltp, trade_id),
+        )
+
+
+# ── shadow trades (counterfactuals for signals not taken) ─────────────────────
+
+def open_shadow(shadow: dict):
+    with connect() as con:
+        con.execute(
+            """INSERT INTO shadow_trades
+               (ts_open, symbol, strategy, direction, strike, option_type,
+                expiry, security_id, entry_price, sl_price, target_price,
+                reason_not_taken, mode, features, peak_ltp, trough_ltp)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                datetime.now().isoformat(), shadow["symbol"], shadow["strategy"],
+                shadow["direction"], shadow["strike"], shadow["option_type"],
+                shadow["expiry"], str(shadow["security_id"]),
+                shadow["entry_price"], shadow.get("sl_price"),
+                shadow.get("target_price"), shadow.get("reason_not_taken", ""),
+                shadow["mode"], shadow.get("features", ""),
+                shadow["entry_price"], shadow["entry_price"],
+            ),
+        )
+
+
+def has_open_shadow(symbol: str, strategy: str, direction: str, mode: str) -> bool:
+    with connect() as con:
+        row = con.execute(
+            """SELECT 1 FROM shadow_trades
+               WHERE symbol=? AND strategy=? AND direction=? AND mode=?
+                 AND ts_close IS NULL LIMIT 1""",
+            (symbol, strategy, direction, mode),
+        ).fetchone()
+        return row is not None
+
+
+def get_open_shadows(mode: str) -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT * FROM shadow_trades WHERE mode=? AND ts_close IS NULL",
+            (mode,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_shadow(shadow_id: int, peak: float, trough: float,
+                   first_eod_price: Optional[float] = None):
+    with connect() as con:
+        con.execute(
+            """UPDATE shadow_trades
+               SET peak_ltp=?, trough_ltp=?,
+                   first_eod_price=COALESCE(first_eod_price, ?)
+               WHERE id=?""",
+            (peak, trough, first_eod_price, shadow_id),
+        )
+
+
+def close_shadow(shadow_id: int, exit_price: float, reason: str):
+    with connect() as con:
+        con.execute(
+            """UPDATE shadow_trades SET ts_close=?, exit_price=?, exit_reason=?
+               WHERE id=?""",
+            (datetime.now().isoformat(), exit_price, reason, shadow_id),
         )
 
 

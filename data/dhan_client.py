@@ -23,6 +23,11 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
+# Product type for NSE_FNO option orders. CNC is equity-delivery only and is
+# rejected for FNO. INTRADAY matches the EOD squareoff design (intraday_close)
+# and gives a broker-side auto-squareoff backstop if the bot misses 15:15.
+FNO_PRODUCT_TYPE = "INTRADAY"
+
 
 class DhanClient:
     _instance: Optional["DhanClient"] = None
@@ -178,6 +183,13 @@ class DhanClient:
 
     def place_order(self, **kwargs) -> dict:
         return self.dhan.place_order(**kwargs)
+
+    def cancel_super_order(self, order_id: str, leg: str = "ENTRY_LEG") -> dict:
+        fn = getattr(self.dhan, "cancel_super_order", None)
+        if fn is not None:
+            return fn(order_id, leg)
+        # Older SDKs without super-order support
+        return self.dhan.cancel_order(order_id)
 
     def cancel_order(self, order_id: str) -> dict:
         return self.dhan.cancel_order(order_id)

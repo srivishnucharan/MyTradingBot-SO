@@ -128,7 +128,12 @@ class TelegramBot:
                 )
                 for update in r.json().get("result", []):
                     self._offset = update["update_id"] + 1
-                    text = update.get("message", {}).get("text", "").strip()
+                    msg = update.get("message", {})
+                    # Only accept commands from the configured chat —
+                    # anyone can message a bot once they find its handle
+                    if str(msg.get("chat", {}).get("id", "")) != self._chat_id:
+                        continue
+                    text = msg.get("text", "").strip()
                     if text:
                         self._dispatch(text)
             except Exception as e:

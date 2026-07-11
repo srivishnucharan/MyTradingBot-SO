@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
-from data.dhan_client import DhanClient
+from data.dhan_client import DhanClient, FNO_PRODUCT_TYPE
 from data.security_master import SecurityMaster
 from data import store
 from strategies.base import StockSignal
@@ -34,7 +34,8 @@ class ExecutionAgent:
         self.master = SecurityMaster()
         self.notifier = notifier
 
-    def execute(self, signal: StockSignal, decision: RiskDecision, lot_size: int) -> dict:
+    def execute(self, signal: StockSignal, decision: RiskDecision,
+                 lot_size: int, features: str = "") -> dict:
         trade_id = f"T-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         qty = decision.sized_lots * lot_size
 
@@ -56,6 +57,8 @@ class ExecutionAgent:
             "target_price": decision.target_price,
             "mode": self.mode,
             "rationale": signal.rationale,
+            "confidence": signal.confidence,
+            "features": features,
         }
 
         if self.mode == "PAPER":
@@ -65,14 +68,13 @@ class ExecutionAgent:
     def _paper_execute(self, trade: dict, expected_premium: float) -> dict:
         fill_price = round(expected_premium * (1 + self.slippage), 2)
         trade["fill_price"] = fill_price
-        trade["sl_price"] = round(fill_price * 0.70, 2)          # -30%
-        trade["target_price"] = round(fill_price * 2.50, 2)       # +150%
+        # SL/target come from RiskDecision (already in trade) — same as LIVE
         store.save_trade(trade)
         store.log_signal(
             symbol=trade["symbol"], strategy=trade["strategy"],
-            direction=trade["direction"], confidence="",
+            direction=trade["direction"], confidence=trade.get("confidence", ""),
             rationale=trade.get("rationale", ""), acted=True,
-            reject_reason="", mode="PAPER",
+            reject_reason="", mode="PAPER", features=trade.get("features", ""),
         )
         log.info("[PAPER] %s %s %s @ %.2f | SL=%.2f | T=%.2f | %dx%d lots",
                  trade["symbol"], trade["strategy"], trade["direction"],
@@ -95,7 +97,7 @@ class ExecutionAgent:
                 transaction_type="BUY",
                 quantity=qty,
                 order_type="MARKET",
-                product_type="CNC",         # Delivery for swing trades
+                product_type=FNO_PRODUCT_TYPE,   # CNC is equity-only; rejected on NSE_FNO
                 price=0,
                 target_price=decision.target_price,
                 stoploss_price=decision.sl_price,
@@ -115,9 +117,9 @@ class ExecutionAgent:
         store.save_order(trade["trade_id"], str(order_id))
         store.log_signal(
             symbol=trade["symbol"], strategy=trade["strategy"],
-            direction=trade["direction"], confidence="",
+            direction=trade["direction"], confidence=trade.get("confidence", ""),
             rationale=trade.get("rationale", ""), acted=True,
-            reject_reason="", mode="LIVE",
+            reject_reason="", mode="LIVE", features=trade.get("features", ""),
         )
         log.info("[LIVE] %s %s %s | Order %s | SL=%.2f | T=%.2f",
                  trade["symbol"], trade["strategy"], trade["direction"],
@@ -127,10 +129,11 @@ class ExecutionAgent:
         return {"status": "success", "trade_id": trade["trade_id"],
                 "order_id": order_id, "mode": "LIVE"}
 
-    def log_rejected_signal(self, signal: StockSignal, reason: str):
+    def log_rejected_signal(self, signal: StockSignal, reason: str,
+                             features: str = ""):
         store.log_signal(
             symbol=signal.symbol, strategy=signal.strategy,
             direction=signal.direction, confidence=signal.confidence,
             rationale=signal.rationale, acted=False,
-            reject_reason=reason, mode=self.mode,
+            reject_reason=reason, mode=self.mode, features=features,
         )
