@@ -126,6 +126,7 @@ table.book td.note{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
     <button class="tab-btn" data-tab="decisions" onclick="switchTab('decisions')">Decision Log</button>
+    <button class="tab-btn" data-tab="learning" onclick="switchTab('learning')">Learning</button>
   </div>
 
   <!-- Overview tab -->
@@ -157,6 +158,32 @@ table.book td.note{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-
           <th>Time</th><th>Symbol</th><th>Strategy</th><th>Dir</th><th>Conf</th><th>Act</th><th>Rationale / Reject</th>
         </tr></thead>
         <tbody id="decision-log-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </section>
+  </div>
+
+  <!-- Learning tab (Phase 2: expectancy from real + shadow trades) -->
+  <div id="tab-learning" style="display:none">
+    <section class="panel">
+      <h2>Strategy Expectancy · R-multiples
+        <span style="color:var(--fg-3);text-transform:none;letter-spacing:0;font-weight:400">greyed rows: n &lt; 30, insufficient sample</span>
+      </h2>
+      <table class="book">
+        <thead><tr>
+          <th>Strategy</th><th>Src</th><th>N</th><th>Win%</th><th>Exp R</th>
+          <th>Avg Win</th><th>Avg Loss</th><th>Med MFE</th><th>Med MAE</th><th>Exits</th>
+        </tr></thead>
+        <tbody id="expectancy-body"><tr><td colspan="10" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Intraday Close vs Hold · Shadow Counterfactuals</h2>
+      <table class="book">
+        <thead><tr>
+          <th>Strategy</th><th>N</th><th>EOD-Close Avg R</th><th>Held-Exit Avg R</th><th>Verdict</th>
+        </tr></thead>
+        <tbody id="eod-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
       </table>
     </section>
   </div>
@@ -253,10 +280,12 @@ function fmtDate(iso) {
 
 function switchTab(name) {
   _tab = name;
-  document.getElementById('tab-overview').style.display = name === 'overview' ? '' : 'none';
-  document.getElementById('tab-decisions').style.display = name === 'decisions' ? '' : 'none';
+  ['overview', 'decisions', 'learning'].forEach(t => {
+    document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
+  });
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   if (name === 'decisions') refreshDecisionLog();
+  if (name === 'learning') refreshExpectancy();
 }
 
 async function setMode(mode) {
@@ -452,6 +481,48 @@ async function refreshDecisionLog() {
   }).join('');
 }
 
+// ── learning tab (Phase 2 expectancy) ──────────────────────────────────────────
+
+async function refreshExpectancy() {
+  const d = await fetchJson('/expectancy?mode=' + _mode);
+  const tbody = document.getElementById('expectancy-body');
+  const eod = document.getElementById('eod-body');
+  if (!d || !d.rows || !d.rows.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No closed samples yet — Phase 1 collecting</td></tr>';
+    eod.innerHTML = '<tr><td colspan="5" class="empty">No shadow counterfactuals closed yet</td></tr>';
+    return;
+  }
+  const fmtR = v => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(2);
+  const rCol = v => v == null ? 'var(--fg-3)' : v > 0 ? 'var(--green)' : 'var(--red)';
+  tbody.innerHTML = d.rows.map(r => {
+    const exits = Object.entries(r.exits || {}).map(([k, v]) => k + ':' + v).join(' ');
+    return `<tr class="${r.reliable ? '' : 'dl-row-dim'}">
+      <td style="color:var(--purple)">${r.strategy}</td>
+      <td>${r.source === 'REAL' ? '<span style="color:var(--blue)">REAL</span>' : '<span style="color:var(--fg-3)">SHDW</span>'}</td>
+      <td>${r.n_closed}${r.n_open ? '<span style="color:var(--fg-3)"> +' + r.n_open + 'o</span>' : ''}</td>
+      <td>${r.win_rate == null ? '—' : r.win_rate + '%'}</td>
+      <td style="color:${rCol(r.expectancy_r)};font-weight:600">${fmtR(r.expectancy_r)}</td>
+      <td style="color:var(--green)">${fmtR(r.avg_win_r)}</td>
+      <td style="color:var(--red)">${fmtR(r.avg_loss_r)}</td>
+      <td>${fmtR(r.median_mfe_r)}</td>
+      <td>${fmtR(r.median_mae_r)}</td>
+      <td class="note" title="${exits}">${exits || '—'}</td>
+    </tr>`;
+  }).join('');
+  const er = d.rows.filter(r => r.n_eod > 0);
+  eod.innerHTML = er.length ? er.map(r => {
+    const diff = (r.avg_hold_r ?? 0) - (r.avg_eod_r ?? 0);
+    const verdict = Math.abs(diff) < 0.05 ? '≈ same' : diff > 0 ? 'HOLD better' : 'EOD better';
+    return `<tr class="${r.n_eod >= d.min_sample ? '' : 'dl-row-dim'}">
+      <td style="color:var(--purple)">${r.strategy}</td>
+      <td>${r.n_eod}</td>
+      <td style="color:${rCol(r.avg_eod_r)}">${fmtR(r.avg_eod_r)}</td>
+      <td style="color:${rCol(r.avg_hold_r)}">${fmtR(r.avg_hold_r)}</td>
+      <td style="color:${diff > 0.05 ? 'var(--green)' : diff < -0.05 ? 'var(--amber)' : 'var(--fg-3)'}">${verdict}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="5" class="empty">No closed shadows with first-day EOD price yet</td></tr>';
+}
+
 // ── actions ────────────────────────────────────────────────────────────────────
 
 async function doSquareoff() {
@@ -494,6 +565,7 @@ async function refreshAll() {
     refreshRisk(), refreshTokenInfo(),
   ]);
   if (_tab === 'decisions') refreshDecisionLog();
+  if (_tab === 'learning') refreshExpectancy();
 }
 
 setInterval(tickClock, 1000); tickClock();

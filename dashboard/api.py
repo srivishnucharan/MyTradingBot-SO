@@ -224,6 +224,16 @@ def metrics(mode: str):
     return _compute_metrics(all_trades)
 
 
+@app.get("/api/expectancy")
+def expectancy(mode: str = "PAPER"):
+    from data.analytics import expectancy_report
+    try:
+        return expectancy_report(mode)
+    except Exception as e:
+        log.warning("expectancy failed: %s", e)
+        return {"mode": mode, "min_sample": 30, "rows": []}
+
+
 @app.get("/api/backtest")
 def backtest_summary():
     try:
